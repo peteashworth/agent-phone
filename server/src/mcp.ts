@@ -8,7 +8,7 @@ import { type Deps, type CallRow, CallRefused, placeCall, confirmCall, getCall, 
 import { listNumbers } from './numbers.ts'
 import { addContact, updateContact, getContact } from './contacts.ts'
 import { authenticate } from './auth.ts'
-import { callDetail } from './routes/api.ts'
+import { callDetail, callTurns } from './routes/api.ts'
 
 const json = (v: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(v, null, 2) }] })
 const fail = (msg: string) => ({ content: [{ type: 'text' as const, text: msg }], isError: true })
@@ -21,6 +21,9 @@ function view(c: CallRow) {
     started_at: c.started_at, ended_at: c.ended_at, duration_s: c.duration_s, end_reason: c.end_reason, error: c.error,
     answered_by: c.answered_by ?? undefined, summary: c.summary ?? undefined, cost_usd: c.cost_usd ?? undefined,
     has_recording: c.recording_path ? true : undefined,
+    brain: c.brain ?? undefined, tier: c.brain === 'jasmine' ? c.tier : undefined,
+    has_brief_personal: c.has_brief_personal ? true : undefined,
+    notes: c.notes ? JSON.parse(c.notes) as string[] : undefined,
   }
 }
 
@@ -47,6 +50,12 @@ export function buildMcpServer(d: Deps, agentId: string): McpServer {
       brief: z.string().min(3).max(4000).describe('What the voice agent needs to know: who, context, facts it may share'),
       plan: z.string().max(4000).optional().describe('Step-by-step call plan / goals / what to do if X'),
       dry_run: z.boolean().optional().describe('Default true. Set false to actually dial.'),
+      brain: z.enum(['canned', 'openai', 'jasmine']).optional()
+        .describe('Who speaks on the call. jasmine = the phone session on Pete\'s host (warmed up before dialing; refused if offline). Default: server setting.'),
+      brief_personal: z.string().max(4000).optional()
+        .describe('Personal context, given to the phone session only after the callee says the code phrase. jasmine brain, Pete only.'),
+      facts: z.array(z.string().max(64)).max(50).optional()
+        .describe('Fact ids or topics from the server facts file this call may use. Share rules (anyone/code/never) still apply.'),
     },
     annotations: { destructiveHint: true, openWorldHint: true, idempotentHint: false },
   }, guard(async a => {
@@ -64,13 +73,14 @@ export function buildMcpServer(d: Deps, agentId: string): McpServer {
   s.registerTool('get_call', {
     title: 'Get a call',
     description: 'Status and outcome of one call, with its status history. After the call ends (about a minute later) it also ' +
-      'has the summary, real cost and answered_by (human, machine_*, timeout). Set transcript:true for the full transcript.',
+      'has the summary, real cost and answered_by (human, machine_*, timeout). Set transcript:true for the full transcript. ' +
+      'jasmine-brain calls also show notes, the tier reached, and per-turn timing (turns, latency).',
     inputSchema: { id: z.string(), transcript: z.boolean().optional() },
     annotations: { readOnlyHint: true },
   }, guard(async ({ id, transcript }) => {
     const c = getCall(d.db, id)
     if (!c) throw new Error(`No call ${id}`)
-    return { ...withContact(c), brief: c.brief, plan: c.plan, events: callEvents(d.db, id),
+    return { ...withContact(c), brief: c.brief, plan: c.plan, events: callEvents(d.db, id), ...callTurns(d, id),
       ...(transcript ? { transcript: callDetail(d, c).transcript } : {}) }
   }))
 
