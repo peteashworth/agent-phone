@@ -47,12 +47,16 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     const body = (req.body ?? {}) as Body
     const messages = Array.isArray(body.messages) ? body.messages : []
     const call = identifyCall(d, messages)
-    const lastUser = textOf(messages.filter(m => m.role === 'user').at(-1)?.content)
+    const lastUserIdx = messages.findLastIndex(m => m.role === 'user')
+    const lastUser = textOf(messages[lastUserIdx]?.content)
+    // Is this the person's reply to the disclosure ("…This call is being recorded.")? Holds for option A and B alike.
+    const prevAgent = messages.slice(0, Math.max(lastUserIdx, 0)).findLast(m => m.role === 'assistant')
+    const afterDisclosure = /being recorded/i.test(textOf(prevAgent?.content))
 
     // Already hanging up: keep repeating the close line, never hand the turn back to the model.
     const prior = call?.hangup_requested_at && call.end_reason?.startsWith('hard_stop:')
       ? call.end_reason.slice('hard_stop:'.length) as keyof typeof CLOSE_LINES : null
-    const stop = prior ?? detectHardStop(lastUser)
+    const stop = prior ?? detectHardStop(lastUser, { afterDisclosure })
     req.log.info({ marker: callMarker(messages), call: call?.id ?? null, turns: messages.length, stop }, 'llm turn')
 
     let source: AsyncIterable<string>

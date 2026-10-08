@@ -22,10 +22,14 @@ const RULES: [HardStop, RegExp][] = [
     String.raw`\b(?:lose|delete) (?:my|this) number\b`,
   ].join('|')) ],
   ['recording_objection', new RegExp([
-    String.raw`\b${NOT} (?:\w+ ){0,3}(?:be(?:ing)? |get(?:ting)? )?record(?:ed|ing)?\b`,
+    String.raw`\b${NOT} (?:\w+ ){0,3}(?:be(?:ing)? |get(?:ting)? )?(?:record|tape)(?:ed|d|ing)?\b`,
     String.raw`\bstop (?:the )?record(?:ing)?\b`,
     String.raw`\b(?:turn|shut) (?:off|of) (?:the )?record(?:ing|er)?\b`,
     String.raw`\b${NOT} (?:\w+ ){0,2}consent\b`,
+    String.raw`\b(?:didnt|did not|never) (?:agree|consent)(?:ed)? to (?:\w+ ){0,2}record`,
+    String.raw`\b(?:i |we )?object to (?:\w+ ){0,2}record`,
+    String.raw`\boff the record\b`,
+    String.raw`\b(?:delete|erase|destroy) (?:the |this |that |my )?record(?:ing)?\b`,
     String.raw`\brecording (?:isnt|is not) (?:ok|okay|alright|fine|allowed)\b`,
     String.raw`\bnot (?:ok|okay|alright|fine|comfortable) (?:with )?(?:being |the |this )?record`,
   ].join('|')) ],
@@ -46,9 +50,16 @@ export function normalize(text: string): string {
   return text.toLowerCase().replace(/[’‘`]/g, "'").replace(/'/g, '').replace(/[^a-z0-9.\s]/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
-export function detectHardStop(utterance: string): HardStop | null {
+// Speech-to-text often mangles a short "don't record" ("Please don't recall." on the Oct 8 test). Only in the reply
+// right after the disclosure, and only as the whole short utterance with no "I" subject, so "I don't recall" never stops.
+const AFTER_DISCLOSURE = /^(?:(?:please|no|nope|um|uh|oh|hey|hi|hello|wait|sorry) )*(?:dont|do not) (?:recall|record|reckon|rekord|recourse|report)(?: (?:me|this|that|it|us|please|thanks|thank you))*$/
+
+export type HardStopContext = { afterDisclosure?: boolean }
+
+export function detectHardStop(utterance: string, ctx: HardStopContext = {}): HardStop | null {
   const t = normalize(utterance)
   if (!t) return null
+  if (ctx.afterDisclosure && AFTER_DISCLOSURE.test(t.replace(/\./g, '').trim())) return 'recording_objection'
   for (const [kind, re] of RULES) {
     const m = re.exec(t)
     if (!m) continue

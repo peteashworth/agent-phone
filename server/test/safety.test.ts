@@ -103,6 +103,20 @@ describe('hard stop classifier', () => {
     ['stop recording', 'recording_objection'],
     ["I'm not okay with being recorded", 'recording_objection'],
     ['I do not consent to this', 'recording_objection'],
+    ["I don't want to be recorded", 'recording_objection'],
+    ['Please stop the recording', 'recording_objection'],
+    ['no recording please', 'recording_objection'],
+    ["don't tape this", 'recording_objection'],
+    ["I didn't agree to being recorded", 'recording_objection'],
+    ["I didn't agree to that price", null],
+    ['I object to being recorded', 'recording_objection'],
+    ['can we keep this off the record', 'recording_objection'],
+    ['delete the recording', 'recording_objection'],
+    ["Please don't recall.", null], // only right after the disclosure (below)
+    ["I don't recall", null],
+    ["I don't recall saying that", null],
+    ['I recall him mentioning it', null],
+    ['Did you record the order number?', null],
     ["Don't call me again", 'opt_out'],
     ['stop calling this number', 'opt_out'],
     ['take me off your list', 'opt_out'],
@@ -114,6 +128,21 @@ describe('hard stop classifier', () => {
     ['Tuesday at 3 works', null],
   ]
   for (const [text, want] of cases) it(`${JSON.stringify(text)} -> ${want}`, () => expect(detectHardStop(text)).toBe(want))
+
+  // Reply to "…This call is being recorded.": short speech-to-text misses of "don't record" also stop.
+  const after: [string, string | null][] = [
+    ["Please don't recall.", 'recording_objection'],
+    ["Don't recall me.", 'recording_objection'],
+    ["Oh, don't report.", 'recording_objection'],
+    ['No, please do not record.', 'recording_objection'],
+    ["I don't recall.", null],
+    ["Sorry, I don't recall that number.", null],
+    ["Don't recall the name, who is this?", null],
+    ['Hello?', null],
+    ['Okay.', null],
+  ]
+  for (const [text, want] of after)
+    it(`after disclosure: ${JSON.stringify(text)} -> ${want}`, () => expect(detectHardStop(text, { afterDisclosure: true })).toBe(want))
 })
 
 describe('output filter', () => {

@@ -58,6 +58,15 @@ describe('custom LLM route', () => {
     const again = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'wait, what?') })
     expect(spoken(again.body)).toBe(CLOSE_LINES.ai_objection)
   })
+  it('a garbled "don\'t record" stops only as the reply to the disclosure', async () => {
+    const { call } = await start()
+    const disclosed = (u: string) => ({ model: 'x', stream: true, messages: [{ role: 'system', content: `call_id: ${call.id}` },
+      { role: 'assistant', content: "Hi, this is Jasmine, Pete's AI assistant. This call is being recorded." }, { role: 'user', content: u }] })
+    const later = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'hello', "Please don't recall.") })
+    expect(spoken(later.body)).not.toBe(CLOSE_LINES.recording_objection)
+    const r = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: disclosed("Please don't recall.") })
+    expect(spoken(r.body)).toBe(CLOSE_LINES.recording_objection)
+  })
   it('opt-out also puts the number on do-not-call (found via the single live call, no marker)', async () => {
     const { d, call } = await start()
     const r = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn('no marker here', 'please stop calling me') })
