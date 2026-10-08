@@ -82,3 +82,11 @@ describe('custom LLM route', () => {
     expect(r.json().choices[0].message.content).toBe(CANNED_LINES[0])
   })
 })
+
+describe('callMarker', () => {
+  it('finds the call id the agent prompt carries', async () => {
+    const { callMarker } = await import('../src/routes/llm.ts')
+    expect(callMarker([{ role: 'system', content: 'Call reference (internal): call_id: call_SIMULATION01\n\nYou are…' }])).toBe('call_SIMULATION01')
+    expect(callMarker([{ role: 'system', content: 'call_id: {{call_id}}' }])).toBeNull()
+  })
+})

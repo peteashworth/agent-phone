@@ -16,6 +16,12 @@ type Body = { model?: string; messages?: ChatMessage[]; stream?: boolean }
 const CALL_ID = /(?<![\w-])call_[A-Za-z0-9_-]{12}(?![\w-])/
 
 /** The agent's system prompt carries "call_id: {{call_id}}"; failing that, the one live call (we only allow one). */
+/** The call_id marker in the system prompt, if any (logged so a deploy can confirm ElevenLabs substitutes it). */
+export function callMarker(messages: ChatMessage[]): string | null {
+  for (const m of messages) if (m.role === 'system') { const id = textOf(m.content).match(CALL_ID)?.[0]; if (id) return id }
+  return null
+}
+
 export function identifyCall(d: Deps, messages: ChatMessage[]): CallRow | undefined {
   for (const m of messages) {
     if (m.role !== 'system') continue
@@ -47,6 +53,7 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     const prior = call?.hangup_requested_at && call.end_reason?.startsWith('hard_stop:')
       ? call.end_reason.slice('hard_stop:'.length) as keyof typeof CLOSE_LINES : null
     const stop = prior ?? detectHardStop(lastUser)
+    req.log.info({ marker: callMarker(messages), call: call?.id ?? null, turns: messages.length, stop }, 'llm turn')
 
     let source: AsyncIterable<string>
     if (stop) {
