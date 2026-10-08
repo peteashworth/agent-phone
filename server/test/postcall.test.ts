@@ -227,8 +227,29 @@ describe('read API', () => {
     const audio = await app!.inject({ url: `/phone/api/calls/${call.id}/recording`, headers: auth })
     expect(audio.headers['content-type']).toBe('audio/mpeg')
     expect([...audio.rawPayload]).toEqual([7, 7])
+    expect(audio.headers['accept-ranges']).toBe('bytes')
+    expect(audio.headers['content-length']).toBe('2')
+    const part = await app!.inject({ url: `/phone/api/calls/${call.id}/recording`, headers: { ...auth, range: 'bytes=1-' } })
+    expect(part.statusCode).toBe(206)
+    expect(part.headers['content-range']).toBe('bytes 1-1/2')
+    expect([...part.rawPayload]).toEqual([7])
+    expect((await app!.inject({ url: `/phone/api/calls/${call.id}/recording`, headers: { ...auth, range: 'bytes=5-' } })).statusCode).toBe(416)
 
     const agentKey = createKey(d.db, 'jasmine', 'agent').key
     expect((await app!.inject({ url: '/phone/api/calls', headers: { authorization: `Bearer ${agentKey}` } })).statusCode).toBe(200)
+  })
+  it('fills a missing duration from Twilio, else ElevenLabs, else the clock', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    applyTwilioStatus(d.db, call.id, { CallSid: 'CAtest1', CallStatus: 'completed' }) // no CallDuration
+    expect(getCall(d.db, call.id)!.duration_s).toBeNull()
+    d.twilioState.CAtest1 = { status: 'completed', duration: null }
+    d.conversations.conv_test1 = { status: 'done', metadata: { call_duration_secs: 41 } }
+    await postCallSweep(d)
+    expect(getCall(d.db, call.id)!.duration_s).toBe(41)
+    run(d.db, "UPDATE calls SET duration_s = 0, started_at = '2026-10-08T18:00:00.000Z' WHERE id = ?", call.id)
+    d.twilioState.CAtest1 = { status: 'completed', duration: 58 }
+    await postCallSweep(d)
+    expect(getCall(d.db, call.id)!.duration_s).toBe(58)
   })
 })

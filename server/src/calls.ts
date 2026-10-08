@@ -290,7 +290,11 @@ export function applyTwilioStatus(db: DB, id: string, p: Record<string, string>)
   if (!call || (call.twilio_sid && p.CallSid && call.twilio_sid !== p.CallSid)) return false
   const status = p.CallStatus
   event(db, id, 'twilio', status || 'unknown', p)
-  if (!status || TERMINAL.has(call.status)) return true // late/duplicate events are kept as history only
+  if (!status || TERMINAL.has(call.status)) {
+    // Late/duplicate events are kept as history only, but a late duration still counts.
+    if (p.CallDuration && !call.duration_s && Number(p.CallDuration) > 0) run(db, 'UPDATE calls SET duration_s = ? WHERE id = ?', Number(p.CallDuration), id)
+    return true
+  }
   const at = now()
   if (status === 'in-progress' && !call.started_at) run(db, 'UPDATE calls SET started_at = ? WHERE id = ?', at, id)
   if (TERMINAL.has(status)) {

@@ -1,0 +1,39 @@
+--- api-server.js (live, phone proxy block)
++++ api-server.js (fixed)
+@@ -1,16 +1,31 @@
+     // GET /api/phone/calls[/:id[/recording]] → droplet /phone/api/calls… (bearer added here)
++    // Streams the body and passes Range through, so <audio> can play (Safari needs 206) and seek.
+     const phoneMatch = url.pathname.match(/^\/api\/phone\/(calls(?:\/call_[\w-]+(?:\/recording)?)?)$/)
+     if (phoneMatch) {
+       if (!PHONE_READ_KEY) { res.writeHead(503, headers); res.end(JSON.stringify({ error: 'PHONE_READ_KEY not set' })); return }
+       const target = `${PHONE_API_URL}/api/${phoneMatch[1]}${url.search}`
+-      fetch(target, { headers: { authorization: `Bearer ${PHONE_READ_KEY}` }, signal: AbortSignal.timeout(15000) })
++      const fwd = { authorization: `Bearer ${PHONE_READ_KEY}` }
++      if (req.headers.range) fwd.range = req.headers.range
++      const ac = new AbortController()
++      const t = setTimeout(() => ac.abort(), 15000) // until the droplet answers; the body itself may take longer
++      res.on('close', () => ac.abort())             // listener went away (seek, page change)
++      fetch(target, { headers: fwd, signal: ac.signal })
+         .then(async r => {
+-          const type = r.headers.get('content-type') || 'application/json'
+-          res.writeHead(r.status, { ...CORS, 'Content-Type': type, 'Cache-Control': 'no-store' })
+-          res.end(Buffer.from(await r.arrayBuffer()))
++          clearTimeout(t)
++          const out = { ...CORS, 'Content-Type': r.headers.get('content-type') || 'application/json', 'Cache-Control': 'no-store' }
++          for (const [h, name] of [['content-length', 'Content-Length'], ['content-range', 'Content-Range'], ['accept-ranges', 'Accept-Ranges']]) {
++            const v = r.headers.get(h)
++            if (v) out[name] = v
++          }
++          res.writeHead(r.status, out)
++          if (!r.body) { res.end(); return }
++          for await (const chunk of r.body) if (!res.write(chunk)) await new Promise(ok => res.once('drain', ok))
++          res.end()
+         })
+         .catch(e => {
+-          if (!res.headersSent) res.writeHead(502, headers)
++          clearTimeout(t)
++          if (res.headersSent) { res.destroy(); return }
++          res.writeHead(502, headers)
+           res.end(JSON.stringify({ error: 'phone service unreachable', detail: e.message }))
+         })
+       return

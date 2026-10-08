@@ -1,7 +1,7 @@
 // Read-only call log for the dashboard: {BASE_PATH}/api/calls[/:id[/recording]]. Bearer key, read (or agent) scope.
 // Never returns brief/plan text to read-scope keys: the dashboard shows what happened, not Pete's instructions.
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { createReadStream, existsSync } from 'node:fs'
+import { createReadStream, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { type Deps, type CallRow, getCall, callEvents } from '../calls.ts'
 import { authenticate } from '../auth.ts'
@@ -90,6 +90,17 @@ export async function apiRoutes(app: FastifyInstance, d: Deps) {
     const c = getCall(db, (req.params as { id: string }).id)
     const file = c?.recording_path ? join(d.config.DATA_DIR, c.recording_path) : null
     if (!file || !existsSync(file)) return reply.code(404).send({ error: 'no recording' })
-    return reply.type('audio/mpeg').header('cache-control', 'private, no-store').send(createReadStream(file))
+    // Range support: Safari/iOS won't play <audio> without 206 answers, and seeking needs it everywhere.
+    const size = statSync(file).size
+    reply.type('audio/mpeg').header('cache-control', 'private, no-store').header('accept-ranges', 'bytes')
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? '').trim())
+    if (req.headers.range && range && (range[1] || range[2])) {
+      let start = range[1] ? Number(range[1]) : Math.max(size - Number(range[2]), 0)
+      let end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1
+      if (start >= size || start > end) return reply.code(416).header('content-range', `bytes */${size}`).send()
+      return reply.code(206).header('content-range', `bytes ${start}-${end}/${size}`).header('content-length', end - start + 1)
+        .send(createReadStream(file, { start, end }))
+    }
+    return reply.header('content-length', size).send(createReadStream(file))
   })
 }

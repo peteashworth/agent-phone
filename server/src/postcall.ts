@@ -63,6 +63,7 @@ export async function postCallSweep(d: Deps): Promise<string[]> {
   const changed = new Set<string>()
   for (const id of await finalizeCalls(d)) changed.add(id)
   for (const id of await fillPrices(d)) changed.add(id)
+  for (const id of await fillDurations(d)) changed.add(id)
   for (const id of purgeRecordings(d)) changed.add(id)
   return [...changed]
 }
@@ -150,6 +151,34 @@ async function saveRecording(d: Deps, call: CallRow) {
 }
 
 /** Twilio rates calls a few minutes after they end. */
+/**
+ * Answered calls that ended without a usable Twilio CallDuration (missed or late status callback, a callback that
+ * arrived after the call was already closed, or 0): ask Twilio, else ElevenLabs, else ended_at - started_at.
+ * The last fallback is always >= 1 when started_at < ended_at, so a call is never picked twice.
+ */
+async function fillDurations(d: Deps): Promise<string[]> {
+  const rows = all<CallRow>(d.db, `SELECT * FROM calls WHERE dry_run = 0 AND started_at IS NOT NULL AND ended_at IS NOT NULL
+    AND (duration_s IS NULL OR (duration_s = 0 AND started_at < ended_at)) ORDER BY ended_at DESC LIMIT 10`)
+  const done: string[] = []
+  for (const call of rows) {
+    let dur: number | null = null, source = 'clock'
+    try {
+      if (call.twilio_sid) { const tw = await d.twilio.fetchCall(call.twilio_sid); if (tw.duration) { dur = tw.duration; source = 'twilio' } }
+    } catch { /* fall through */ }
+    if (!dur && call.el_conversation_id) {
+      try {
+        const conv = await d.elevenlabs.getConversation(call.el_conversation_id)
+        if (conv.metadata?.call_duration_secs) { dur = Math.round(conv.metadata.call_duration_secs); source = 'elevenlabs' }
+      } catch { /* fall through */ }
+    }
+    if (!dur) dur = Math.max(Math.round((Date.parse(call.ended_at!) - Date.parse(call.started_at!)) / 1000), 1)
+    run(d.db, 'UPDATE calls SET duration_s = ? WHERE id = ?', dur, call.id)
+    event(d.db, call.id, 'server', 'duration_filled', { duration_s: dur, source })
+    done.push(call.id)
+  }
+  return done
+}
+
 async function fillPrices(d: Deps): Promise<string[]> {
   const since = new Date(Date.now() - PRICE_WINDOW_MS).toISOString()
   const rows = all<CallRow>(d.db, `SELECT * FROM calls WHERE dry_run = 0 AND twilio_sid IS NOT NULL AND twilio_price_usd IS NULL
