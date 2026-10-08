@@ -13,7 +13,9 @@ const SCRIPT = [
 ]
 
 http.createServer(async (req, res) => {
+  const tReq = performance.now()
   console.log(JSON.stringify({ at: new Date().toISOString(), req: `${req.method} ${req.url}` }))
+  res.on('close', () => console.log(JSON.stringify({ at: new Date().toISOString(), res: `${req.method} ${req.url}`, status: res.statusCode, ms: Math.round(performance.now() - tReq), aborted: !res.writableFinished })))
   if (req.method !== 'POST' || !/(\/chat\/completions|\/v1)\/?(\?.*)?$/.test(req.url)) { res.writeHead(404).end(); return }
   if (req.headers.authorization !== `Bearer ${SECRET}`) { res.writeHead(401).end(); return }
   const t0 = performance.now()
