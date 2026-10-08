@@ -5,7 +5,7 @@ import { createKey } from '../src/auth.ts'
 import { placeCall, getCall, warming, CallRefused } from '../src/calls.ts'
 import { claimNext, submitResult, markPoll, getJob, enqueueJob, type JobRow } from '../src/brainJobs.ts'
 import { TurnLog, prepareJasmineTurn, runJasmineTurn } from '../src/voice/brainTurn.ts'
-import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, CODE_ATTEMPT_PLACEHOLDER } from '../src/voice/lines.ts'
+import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, CODE_ATTEMPT_PLACEHOLDER, pickFiller } from '../src/voice/lines.ts'
 import { findPhrase, removePhrase } from '../src/voice/codePhrase.ts'
 import { OutputFilter } from '../src/voice/outputFilter.ts'
 import { redact } from '../src/postcall.ts'
@@ -148,7 +148,25 @@ describe('jasmine turns', () => {
     const { call } = await start({ FILLER_AFTER_MS: '40', FILLER2_AFTER_MS: '120' }, {}, [undefined as never, [{ say: 'Done.' }], { delayMs: 250 }])
     // delayMs also slows call.start; the turn itself is the second answer
     const r = await ask(call.id, 'check something')
-    expect(spoken(r.body)).toBe(FILLER_LINES[1] + FILLER2_LINE + 'Done.')
+    const body = spoken(r.body)
+    expect(FILLER_LINES.some(l => body === l + FILLER2_LINE + 'Done.')).toBe(true)
+  })
+  it('the filler rotates and never repeats the last one on the call', async () => {
+    const { call } = await start({ FILLER_AFTER_MS: '30', FILLER2_AFTER_MS: '0' }, {},
+      [undefined as never, [{ say: 'A.' }, { say: 'B.' }, { say: 'C.' }, { say: 'D.' }], { delayMs: 120 }])
+    const heard: string[] = []
+    const said = ['one', 'two', 'three', 'four']
+    for (let i = 1; i <= 4; i++) heard.push(spoken((await ask(call.id, ...said.slice(0, i))).body))
+    const used = heard.map(h => FILLER_LINES.findIndex(l => h.startsWith(l)))
+    expect(used.every(i => i >= 0)).toBe(true)
+    for (let i = 1; i < used.length; i++) expect(used[i]).not.toBe(used[i - 1])
+  })
+  it('pickFiller skips the last index', () => {
+    for (let last = -1; last < FILLER_LINES.length; last++)
+      for (const r of [0, 0.3, 0.6, 0.999]) {
+        const i = pickFiller(last, () => r)
+        expect(i).not.toBe(last); expect(FILLER_LINES[i]).toBeDefined()
+      }
   })
   it('one retry on a host error, then the exit line and a hangup', async () => {
     const { d, call } = await start({}, {}, [undefined as never, [{ error: 'busy' }, { say: 'Back now.' }, { error: 'busy' }, { error: 'down' }]])

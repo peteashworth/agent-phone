@@ -68,7 +68,7 @@ const schema = z.object({
   // call.start must be answered {ready:true} within this, or the call fails as brain_not_ready and is never dialed.
   WARM_TIMEOUT_S: z.coerce.number().int().min(5).max(300).default(90),
   // Fixed filler lines while a turn is pending, and the per-turn limit before the exit line + hangup.
-  FILLER_AFTER_MS: z.coerce.number().int().min(0).max(20000).default(1500),
+  FILLER_AFTER_MS: z.coerce.number().int().min(0).max(20000).default(2500),
   FILLER2_AFTER_MS: z.coerce.number().int().min(0).max(30000).default(9000),
   TURN_TIMEOUT_S: z.coerce.number().int().min(3).max(60).default(20),
   // No poll from the host for this long = brain offline (place_call refuses, live turns take the exit line).

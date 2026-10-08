@@ -9,7 +9,7 @@ import { loadFacts, pickFacts, factsFor, filterFacts, type Fact } from '../facts
 import type { FilterOptions } from './outputFilter.ts'
 import { type ChatMessage, textOf } from './brain.ts'
 import { findPhrase, removePhrase } from './codePhrase.ts'
-import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, CODE_ATTEMPT_PLACEHOLDER, speakMs } from './lines.ts'
+import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, pickFiller, CODE_ATTEMPT_PLACEHOLDER, speakMs } from './lines.ts'
 
 export const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
@@ -49,6 +49,13 @@ export class TurnLog {
       m.filler1 ?? null, m.filler2 ?? null, m.done ?? null, this.outcome, this.said || null, this.redact.join(',') || null,
       this.row as number)
   }
+}
+
+/** Index in FILLER_LINES of the last first-filler this call spoke, or -1. */
+function lastFiller(db: Deps['db'], callId: string): number {
+  const row = one<{ said: string | null }>(db,
+    "SELECT said FROM call_turns WHERE call_id = ? AND filler1_ms IS NOT NULL AND outcome != 'pending' ORDER BY id DESC LIMIT 1", callId)
+  return row?.said ? FILLER_LINES.findIndex(l => row.said!.startsWith(l)) : -1
 }
 
 /** The previous turn on this call, to tell whether the person cut it off. */
@@ -206,7 +213,7 @@ export async function* runJasmineTurn(d: Deps, p: Prepared, log: TurnLog, signal
   }
   let jobId = send()
   const fillers: { at: number; stage: 'filler1' | 'filler2'; line: string }[] = [
-    { at: log.t0 + c.FILLER_AFTER_MS, stage: 'filler1' as const, line: FILLER_LINES[p.seq % FILLER_LINES.length] },
+    { at: log.t0 + c.FILLER_AFTER_MS, stage: 'filler1' as const, line: FILLER_LINES[pickFiller(lastFiller(db, id))] },
     ...(c.FILLER2_AFTER_MS ? [{ at: log.t0 + c.FILLER2_AFTER_MS, stage: 'filler2' as const, line: FILLER2_LINE }] : []),
   ].filter(f => f.at < deadline)
 
