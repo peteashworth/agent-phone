@@ -24,7 +24,8 @@ export type GreetingClass = 'machine' | 'human' | null
  */
 export function classifyGreeting(text: string, opening: boolean): GreetingClass {
   const t = text.replace(/[’]/g, "'").replace(/\s+/g, ' ').trim()
-  if (!t) return null
+  // Silence: ElevenLabs sends "..." as the user turn when initial_wait_time runs out (call_x9W-927k1Ap-). No signal.
+  if (!/\w/.test(t)) return null
   if (MACHINE_WORDING.test(t)) return 'machine'
   if (!opening) return null
   const words = t.split(' ').filter(w => /\w/.test(w)).length

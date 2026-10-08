@@ -317,6 +317,12 @@ describe('wait-for-hello opening (blank first_message)', () => {
     expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'unknown', end_reason: null })
     expect(d.ended).toEqual([])
   })
+  it('silence arrives as "..." (what ElevenLabs actually sends): disclosure, no verdict from it', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    expect(said(await opening(call.id, '...'))).toBe(DISCLOSURE)
+    expect(getCall(d.db, call.id)!.answered_by).toBeNull()
+  })
   it('a person stays silent and Twilio never answers: timeout carries on as human', async () => {
     const { d, call } = await start()
     answer(d, call.id)
@@ -379,7 +385,7 @@ describe('wait-for-hello opening (blank first_message)', () => {
 
 describe('classifyGreeting', () => {
   it.each([
-    ['Hello?', true, 'human'], ['Yeah, hi.', true, 'human'], ['Hi, this is Pete.', true, 'human'], ['', true, null],
+    ['Hello?', true, 'human'], ['Yeah, hi.', true, 'human'], ['Hi, this is Pete.', true, 'human'], ['', true, null], ['...', true, null], [' … ', true, null],
     ['Hey, who is this calling please?', true, null],
     ["The person you're trying to reach is not available.", true, 'machine'], ['Please leave a message.', true, 'machine'],
     ['Sure, I can talk for a few minutes, what is this about exactly then?', false, null],
