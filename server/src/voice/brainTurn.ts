@@ -3,7 +3,7 @@
 // fillers, the timeout exit, barge-in, and the control flags that come back with the answer.
 import { createHash } from 'node:crypto'
 import { type Deps, type CallRow, getCall, hangup, event } from '../calls.ts'
-import { audit, one, run } from '../db.ts'
+import { all, audit, one, run } from '../db.ts'
 import { brainOnline, enqueueJob, awaitJob, cancelJob } from '../brainJobs.ts'
 import { loadFacts, pickFacts, factsFor, filterFacts, type Fact } from '../facts.ts'
 import type { FilterOptions } from './outputFilter.ts'
@@ -186,6 +186,11 @@ export function parseAnswer(raw: string | null): Answer {
 /** What to say for a turn on a call that's already being hung up (not a hard stop; that's handled before). */
 export function closingLine(call: CallRow): string {
   return call.end_reason === 'brain_timeout' || call.end_reason === 'brain_offline' ? EXIT_LINE : ''
+}
+
+/** True if this call already spoke the line (closing lines are said once; later closing turns stay silent). */
+export function alreadySaid(db: Deps['db'], callId: string, line: string): boolean {
+  return all<{ said: string }>(db, 'SELECT said FROM call_turns WHERE call_id = ? AND said IS NOT NULL', callId).some(r => r.said.includes(line))
 }
 
 /**

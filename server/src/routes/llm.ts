@@ -10,7 +10,7 @@ import { setDoNotCall } from '../contacts.ts'
 import { detectHardStop, CLOSE_LINES } from '../voice/hardStops.ts'
 import { OutputFilter } from '../voice/outputFilter.ts'
 import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '../voice/brain.ts'
-import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine } from '../voice/brainTurn.ts'
+import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine, alreadySaid } from '../voice/brainTurn.ts'
 import type { FilterOptions } from '../voice/outputFilter.ts'
 import { awaitHuman, applyGreeting, isMachine } from '../postcall.ts'
 import { DISCLOSURE } from '../voice/lines.ts'
@@ -59,7 +59,7 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     const prevAgent = messages.slice(0, Math.max(lastUserIdx, 0)).findLast(m => m.role === 'assistant')
     const afterDisclosure = /being recorded/i.test(textOf(prevAgent?.content))
 
-    // Already hanging up: keep repeating the close line, never hand the turn back to the model.
+    // Already hanging up: never hand the turn back to the model. The close line is said once; repeats stay silent.
     const prior = call?.hangup_requested_at && call.end_reason?.startsWith('hard_stop:')
       ? call.end_reason.slice('hard_stop:'.length) as keyof typeof CLOSE_LINES : null
     const stop = prior ?? detectHardStop(lastUser, { afterDisclosure })
@@ -72,7 +72,8 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     let source: AsyncIterable<string>
     if (stop) {
       if (call) log = new TurnLog(d, call, kind, prior ? 'closing' : 'hard_stop')
-      source = (async function* () { yield CLOSE_LINES[stop] })()
+      const line = prior && call && alreadySaid(db, call.id, CLOSE_LINES[stop]) ? '' : CLOSE_LINES[stop]
+      source = (async function* () { if (line) yield line })()
       if (!prior) {
         req.log.warn({ call: call?.id, stop }, 'hard stop')
         audit(db, 'system', 'call.hard_stop', call?.id ?? null, { stop, identified: !!call })
@@ -102,7 +103,7 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       } else if (now?.hangup_requested_at) {
         // Ending for another reason (brain_end, timeout, watchdog): never hand the turn back to a brain.
         log = new TurnLog(d, now, kind, 'closing')
-        const line = closingLine(now)
+        const exit = closingLine(now), line = exit && !alreadySaid(db, now.id, exit) ? exit : ''
         source = (async function* () { if (line) yield line })()
       } else if (opening) {
         if (now) log = new TurnLog(d, now, kind, 'disclosure')

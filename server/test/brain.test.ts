@@ -173,8 +173,8 @@ describe('jasmine turns', () => {
     expect(spoken((await ask(call.id, 'hi')).body)).toBe('Back now.')
     expect(spoken((await ask(call.id, 'hi', 'again')).body)).toBe(EXIT_LINE)
     expect(getCall(d.db, call.id)!.end_reason).toBe('brain_timeout')
-    // later turns while the hangup lands: the exit line again, no new job
-    expect(spoken((await ask(call.id, 'hi', 'again', 'hello?')).body)).toBe(EXIT_LINE)
+    // later turns while the hangup lands: silent (the exit line is said once), no new job
+    expect(spoken((await ask(call.id, 'hi', 'again', 'hello?')).body)).toBe('') // said once already
   })
   it('no answer within TURN_TIMEOUT_S: exit line, hangup', async () => {
     const { d, call } = await start({ TURN_TIMEOUT_S: '3' }, {}, [undefined as never, [() => null]])

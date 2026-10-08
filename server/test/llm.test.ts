@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify'
 import { buildApp } from '../src/app.ts'
 import { placeCall, getCall } from '../src/calls.ts'
 import { getContact } from '../src/contacts.ts'
+import { all } from '../src/db.ts'
 import { CLOSE_LINES } from '../src/voice/hardStops.ts'
 import { BLOCKED_LINE } from '../src/voice/outputFilter.ts'
 import { CANNED_LINES } from '../src/voice/brain.ts'
@@ -48,7 +49,7 @@ describe('custom LLM route', () => {
     expect(r.headers['content-type']).toMatch(/event-stream/)
     expect(spoken(r.body)).toBe(CANNED_LINES[0])
   })
-  it('hard stop: speaks the close line, hangs up via Twilio, keeps closing on later turns', async () => {
+  it('hard stop: speaks the close line once, hangs up via Twilio, later turns stay silent', async () => {
     const { d, call } = await start()
     const r = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'hello', "I don't want to talk to a robot") })
     expect(spoken(r.body)).toBe(CLOSE_LINES.ai_objection)
@@ -56,7 +57,9 @@ describe('custom LLM route', () => {
     expect(d.ended).toEqual(['CAtest1'])
     expect(getCall(d.db, call.id)).toMatchObject({ end_reason: 'hard_stop:ai_objection' })
     const again = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'wait, what?') })
-    expect(spoken(again.body)).toBe(CLOSE_LINES.ai_objection)
+    expect(spoken(again.body)).toBe('')
+    const kinds = all<{ kind: string; said: string | null }>(d.db, 'SELECT kind, said FROM call_turns WHERE call_id = ? ORDER BY id', call.id)
+    expect(kinds).toEqual([{ kind: 'hard_stop', said: CLOSE_LINES.ai_objection }, { kind: 'closing', said: null }])
   })
   it('a garbled "don\'t record" stops only as the reply to the disclosure', async () => {
     const { call } = await start()
