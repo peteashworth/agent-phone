@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto'
 import { type Deps, type CallRow, getCall, hangup, event } from '../calls.ts'
 import { all, audit, one, run } from '../db.ts'
-import { brainOnline, enqueueJob, awaitJob, cancelJob } from '../brainJobs.ts'
+import { brainOnline, enqueueJob, awaitJob, cancelJob, getJob, type JobRow } from '../brainJobs.ts'
 import { loadFacts, pickFacts, factsFor, filterFacts, type Fact } from '../facts.ts'
 import type { FilterOptions } from './outputFilter.ts'
 import { type ChatMessage, textOf } from './brain.ts'
@@ -43,8 +43,10 @@ export class TurnLog {
   save() {
     this.mark('done')
     const m = this.ms
+    // A turn a later request took over (continuation) stays 'continued', whatever its own close handler says.
     run(this.d.db, `UPDATE call_turns SET kind = ?, job_id = ?, attempts = ?, queued_ms = ?, picked_ms = ?, reply_ms = ?, filtered_ms = ?,
-                    tts_ms = ?, filler1_ms = ?, filler2_ms = ?, done_ms = ?, outcome = ?, said = ?, redact_hash = ? WHERE id = ?`,
+                    tts_ms = ?, filler1_ms = ?, filler2_ms = ?, done_ms = ?,
+                    outcome = CASE WHEN outcome = 'continued' THEN outcome ELSE ? END, said = ?, redact_hash = ? WHERE id = ?`,
       this.kind, this.jobId, this.attempts, m.queued ?? null, m.picked ?? null, m.reply ?? null, m.filtered ?? null, m.tts ?? null,
       m.filler1 ?? null, m.filler2 ?? null, m.done ?? null, this.outcome, this.said || null, this.redact.join(',') || null,
       this.row as number)
@@ -61,7 +63,45 @@ function lastFiller(db: Deps['db'], callId: string): number {
 /** The previous turn on this call, to tell whether the person cut it off. */
 function previousTurn(d: Deps, callId: string) {
   return one<{ outcome: string; said: string | null }>(d.db,
-    "SELECT outcome, said FROM call_turns WHERE call_id = ? AND outcome != 'pending' ORDER BY id DESC LIMIT 1", callId)
+    "SELECT outcome, said FROM call_turns WHERE call_id = ? AND outcome NOT IN ('pending', 'continued') ORDER BY id DESC LIMIT 1", callId)
+}
+
+// ---------------------------------------------------------------- continuation
+
+/** True if the text is fillers only (or nothing): the person never heard an answer in it. */
+export function onlyFiller(said: string | null): boolean {
+  let s = said ?? ''
+  for (const l of [...FILLER_LINES, FILLER2_LINE].map(l => l.trim())) s = s.split(l).join('')
+  return !s.trim()
+}
+
+export type Continuation = { seq: number | null; interrupted: unknown }
+
+/**
+ * ElevenLabs ends a turn on a short pause, then sends the rest of the sentence as a new request and drops the first.
+ * If the previous brain turn spoke nothing but filler and was dropped less than CONTINUATION_MS ago (or is still
+ * open), this request carries on that turn: its job is cancelled, the row is marked 'continued' (not barge_in), and
+ * the new job gets the whole text. A turn that had started its real answer is a barge-in, as before.
+ */
+export function takeContinuation(d: Deps, callId: string, now = Date.now()): Continuation | null {
+  const { db, config: c } = d
+  if (!c.CONTINUATION_MS) return null
+  const row = one<{ id: number; kind: string; started_at: string; done_ms: number | null; outcome: string; said: string | null; job_id: string | null }>(db,
+    'SELECT id, kind, started_at, done_ms, outcome, said, job_id FROM call_turns WHERE call_id = ? ORDER BY id DESC LIMIT 1', callId)
+  if (!row || row.kind !== 'brain' || !onlyFiller(row.said)) return null
+  let job: JobRow | undefined
+  if (row.outcome === 'barge_in') {
+    if (now - (Date.parse(row.started_at) + (row.done_ms ?? 0)) > c.CONTINUATION_MS) return null
+    job = row.job_id ? getJob(db, row.job_id) : undefined
+  } else if (row.outcome === 'pending') {
+    // Still open (its request hasn't been dropped yet): only a turn waiting on a host job can be taken over.
+    job = one<JobRow>(db, "SELECT * FROM brain_jobs WHERE call_id = ? AND type = 'turn' AND status IN ('queued','picked') ORDER BY created_at DESC, rowid DESC LIMIT 1", callId)
+    if (!job) return null
+  } else return null
+  run(db, "UPDATE call_turns SET outcome = 'continued' WHERE id = ?", row.id)
+  if (job) cancelJob(db, job.id)
+  event(db, callId, 'server', 'continuation', { turn: row.id, seq: job?.seq ?? null, picked: !!job?.picked_at })
+  return { seq: job?.picked_at ? job.seq : null, interrupted: job ? (JSON.parse(job.payload) as { interrupted?: unknown }).interrupted ?? null : null }
 }
 
 // ---------------------------------------------------------------- code phrase + payload (synchronous)
@@ -106,12 +146,21 @@ export function filterOptions(d: Deps, call: CallRow): FilterOptions {
  * §7 code phrase, then the turn payload. Synchronous so the tier is settled before the output filter is built.
  * The phrase is never stored, logged or sent: an attempt's words are replaced, a match is cut out.
  */
-export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage[], log: TurnLog): Prepared {
+export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage[], log: TurnLog, cont: Continuation | null = null): Prepared {
   const { config: c, db } = d
   const users = userTexts(messages)
-  const sent = one<{ n: number | null }>(db,
-    "SELECT MAX(users_upto) AS n FROM brain_jobs WHERE call_id = ? AND type = 'turn' AND picked_at IS NOT NULL", call.id)?.n ?? 0
-  const fresh = users.slice(Math.min(sent, users.length))
+  // User text the host has already answered. Jobs of continued turns don't count: their text goes out again, merged.
+  const sent = one<{ n: number | null }>(db, `SELECT MAX(j.users_upto) AS n FROM brain_jobs j WHERE j.call_id = ? AND j.type = 'turn'
+    AND j.picked_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM call_turns t WHERE t.job_id = j.id AND t.outcome = 'continued')`, call.id)?.n ?? 0
+  let fresh = users.slice(Math.min(sent, users.length))
+  // ElevenLabs may rewrite the last user message in place (fragments merged): no new message, but new words.
+  if (!fresh.length && users.length) {
+    fresh = users.slice(-1)
+    event(db, call.id, 'server', 'user_text_rewritten', { users: users.length, sent })
+  }
+  // A fragment followed by the whole sentence as its own message: keep the whole sentence only.
+  const norm = (t: string) => t.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim()
+  fresh = fresh.filter((t, i) => !(i + 1 < fresh.length && norm(t) && norm(fresh[i + 1]).startsWith(norm(t))))
   let userText = fresh.join(' ').trim()
   let codePhrase: 'verified' | 'incorrect' | null = null
   let locked = false
@@ -152,8 +201,9 @@ export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage
   const { picked } = factsOf(d, now)
   const prev = previousTurn(d, call.id)
   const lastAgent = textOf(messages.findLast(m => m.role === 'assistant')?.content).trim()
-  const interrupted = prev?.said && (prev.outcome === 'barge_in' || (lastAgent && lastAgent.length < prev.said.trim().length - 2))
-    ? { spoken: lastAgent || null } : null
+  const interrupted = cont ? cont.interrupted ?? null
+    : prev?.said && (prev.outcome === 'barge_in' || (lastAgent && lastAgent.length < prev.said.trim().length - 2))
+      ? { spoken: lastAgent || null } : null
 
   const seq = now.brain_seq + 1
   run(db, 'UPDATE calls SET brain_seq = ? WHERE id = ?', seq, call.id)
@@ -163,6 +213,8 @@ export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage
       tier: now.tier, user_text: userText, interrupted, code_phrase: codePhrase,
       ...(codePhrase === 'verified' ? { brief_personal: now.brief_personal, facts: factsFor(picked, 'code') } : {}),
       ...(locked ? { code_locked: true } : {}),
+      // The host picked the job this one replaces: its answer to that one was never spoken.
+      ...(cont?.seq != null ? { continues: cont.seq } : {}),
     },
   }
 }
@@ -231,6 +283,8 @@ export async function* runJasmineTurn(d: Deps, p: Prepared, log: TurnLog, signal
       log.outcome = 'barge_in'
       return
     }
+    // Cancelled by someone else = a newer request took this turn over (takeContinuation). Say nothing more.
+    if (job.status === 'cancelled') { log.outcome = 'continued'; return }
     if (job.status === 'done') {
       log.mark('reply', job.answered_at ? Date.parse(job.answered_at) : Date.now())
       const a = parseAnswer(job.result)
@@ -251,7 +305,7 @@ export async function* runJasmineTurn(d: Deps, p: Prepared, log: TurnLog, signal
       jobId = send()
       continue
     }
-    if (job.status === 'failed' || job.status === 'cancelled' || job.status === 'expired' || Date.now() >= deadline) {
+    if (job.status === 'failed' || job.status === 'expired' || Date.now() >= deadline) {
       cancelJob(db, jobId, 'expired')
       yield exit('brain_timeout', job.status === 'failed' ? 'error' : 'timeout')
       return

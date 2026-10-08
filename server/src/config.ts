@@ -70,6 +70,9 @@ const schema = z.object({
   // Fixed filler lines while a turn is pending, and the per-turn limit before the exit line + hangup.
   FILLER_AFTER_MS: z.coerce.number().int().min(0).max(20000).default(2500),
   FILLER2_AFTER_MS: z.coerce.number().int().min(0).max(30000).default(9000),
+  // A new request this soon after the previous turn was dropped, when that turn spoke only filler, carries it on
+  // (ElevenLabs split one sentence on a pause): merged text, no barge-in. 0 = off.
+  CONTINUATION_MS: z.coerce.number().int().min(0).max(10000).default(1500),
   TURN_TIMEOUT_S: z.coerce.number().int().min(3).max(60).default(20),
   // No poll from the host for this long = brain offline (place_call refuses, live turns take the exit line).
   BRAIN_OFFLINE_S: z.coerce.number().int().min(5).max(300).default(30),

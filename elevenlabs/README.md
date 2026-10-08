@@ -19,3 +19,9 @@ prompt and settings; changes are applied with PATCH /v1/convai/agents/{id} and c
   (`server/src/voice/lines.ts`), and the greeting feeds the AMD verdict: a short hello gives `human_greeting`, while a
   long greeting or voicemail wording gives `machine_greeting`, which ends the call as `voicemail`. Deploy the server
   first: an older server would let the brain talk without the disclosure.
+
+## turn-eagerness.mjs
+
+`node elevenlabs/turn-eagerness.mjs patient|normal|eager` sets `turn.turn_eagerness` on the production agent and
+prints it before and after. Since Oct 8 it is **patient**: on "normal", ~0.9s pauses split one sentence into several
+turns. Revert with `normal`. There is no millisecond silence setting in the API. `speculative_turn` stays on.

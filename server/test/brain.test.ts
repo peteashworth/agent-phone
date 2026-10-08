@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.ts'
 import { createKey } from '../src/auth.ts'
 import { placeCall, getCall, warming, CallRefused } from '../src/calls.ts'
 import { claimNext, submitResult, markPoll, getJob, enqueueJob, type JobRow } from '../src/brainJobs.ts'
-import { TurnLog, prepareJasmineTurn, runJasmineTurn } from '../src/voice/brainTurn.ts'
+import { TurnLog, prepareJasmineTurn, runJasmineTurn, onlyFiller } from '../src/voice/brainTurn.ts'
 import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, CODE_ATTEMPT_PLACEHOLDER, pickFiller } from '../src/voice/lines.ts'
 import { findPhrase, removePhrase } from '../src/voice/codePhrase.ts'
 import { OutputFilter } from '../src/voice/outputFilter.ts'
@@ -205,6 +205,88 @@ describe('jasmine turns', () => {
     expect(out).toEqual([])
     expect(log.outcome).toBe('barge_in')
     expect(getJob(d.db, log.jobId!)!.status).toBe('cancelled')
+  })
+})
+
+describe('continuation (one sentence split on a pause)', () => {
+  /** Turn 1 as the route runs it, then dropped by ElevenLabs (the close handler's barge_in) after `abortMs`. */
+  async function dropped(d: ReturnType<typeof setup>, call: ReturnType<typeof getCall> & object, user: string[], opts: { abortMs?: number; spoke?: string } = {}) {
+    const log = new TurnLog(d, call, 'jasmine', 'brain')
+    const p = prepareJasmineTurn(d, call, turn(call.id, ...user).messages as never, log)
+    const ac = new AbortController()
+    setTimeout(() => ac.abort(), opts.abortMs ?? 60)
+    for await (const t of runJasmineTurn(d, p, log, ac.signal)) log.spoke(t)
+    if (opts.spoke) log.spoke(opts.spoke)
+    log.outcome = 'barge_in'; log.save()
+    return p
+  }
+  const payloads = (seen: JobRow[]) => seen.filter(j => j.type === 'turn').map(j => JSON.parse(j.payload))
+  const outcomes = (d: ReturnType<typeof setup>, id: string) =>
+    all<{ outcome: string }>(d.db, 'SELECT outcome FROM call_turns WHERE call_id = ? ORDER BY id', id).map(r => r.outcome)
+
+  it('dropped with nothing said, rewritten in place: merged text, continued (not barge_in), host told which seq it replaces', async () => {
+    const { d, call, seen } = await start({}, {}, [undefined as never, [() => null, { say: 'Nice.' }]])
+    const p1 = await dropped(d, call, ['Uh, just trying'])
+    expect(getJob(d.db, seen.find(j => j.type === 'turn')!.id)!.picked_at).not.toBeNull()
+    expect(spoken((await ask(call.id, "Uh, just trying to work on Celine's body kit. You?")).body)).toBe('Nice.')
+    const [, second] = payloads(seen)
+    expect(second).toMatchObject({ user_text: "Uh, just trying to work on Celine's body kit. You?", continues: p1.seq, interrupted: null })
+    expect(outcomes(d, call.id)).toEqual(['continued', 'ok'])
+    expect(all(d.db, "SELECT 1 FROM call_events WHERE call_id = ? AND type = 'continuation'", call.id)).toHaveLength(1)
+  })
+  it('the rest as its own message: both fragments go out together; a filler-only turn still counts as nothing said', async () => {
+    const { d, call, seen } = await start({ FILLER_AFTER_MS: '20' }, {}, [undefined as never, [() => null, { say: 'Got it.' }]])
+    await dropped(d, call, ['Uh, just trying'], { abortMs: 80 })
+    expect(FILLER_LINES.some(l => all<{ said: string }>(d.db, 'SELECT said FROM call_turns WHERE call_id = ?', call.id)[0].said === l)).toBe(true)
+    expect(spoken((await ask(call.id, 'Uh, just trying', 'to work on the kit.')).body)).toBe('Got it.')
+    expect(payloads(seen)[1].user_text).toBe('Uh, just trying to work on the kit.')
+    expect(outcomes(d, call.id)).toEqual(['continued', 'ok'])
+  })
+  it('a fragment repeated inside the whole sentence is sent once', async () => {
+    const { d, call, seen } = await start({}, {}, [undefined as never, [() => null, { say: 'Ok.' }]])
+    await dropped(d, call, ['Things are going'])
+    await ask(call.id, 'Things are going', 'Things are going well, thanks.')
+    expect(payloads(seen)[1].user_text).toBe('Things are going well, thanks.')
+  })
+  it('the open request is taken over when the next one arrives first; the old one goes quiet', async () => {
+    const { d, call, seen } = await start({}, {}, [undefined as never, [() => null, { say: 'Sure.' }]])
+    const first = ask(call.id, 'Can you')
+    while (!seen.some(j => j.type === 'turn')) await new Promise(r => setTimeout(r, 5))
+    const second = await ask(call.id, 'Can you check the date?')
+    expect(spoken(second.body)).toBe('Sure.')
+    expect(spoken((await first).body)).toBe('')
+    expect(payloads(seen)[1]).toMatchObject({ user_text: 'Can you check the date?', continues: 1 })
+    expect(outcomes(d, call.id)).toEqual(['continued', 'ok'])
+  })
+  it('a real answer already started: barge-in as before (interrupted, no merge)', async () => {
+    const { d, call, seen } = await start({}, {}, [undefined as never, [() => null, { say: 'Okay.' }]])
+    await dropped(d, call, ['what day is it'], { spoke: 'It is Thursday, Oct' })
+    await ask(call.id, 'what day is it', 'never mind')
+    const [, second] = payloads(seen)
+    expect(second.user_text).toBe('never mind')
+    expect(second.continues).toBeUndefined()
+    expect(second.interrupted).not.toBeNull()
+    expect(outcomes(d, call.id)).toEqual(['barge_in', 'ok'])
+  })
+  it('later than CONTINUATION_MS: barge-in as before', async () => {
+    const { d, call, seen } = await start({ CONTINUATION_MS: '1' }, {}, [undefined as never, [() => null, { say: 'Okay.' }]])
+    await dropped(d, call, ['Uh, just trying'])
+    await new Promise(r => setTimeout(r, 20))
+    await ask(call.id, 'Uh, just trying', 'to work on the kit.')
+    expect(payloads(seen)[1].user_text).toBe('to work on the kit.')
+    expect(outcomes(d, call.id)).toEqual(['barge_in', 'ok'])
+  })
+  it('never an empty user_text: a last message rewritten in place is sent again', async () => {
+    const { d, call, seen } = await start({ CONTINUATION_MS: '0' }, {}, [undefined as never, [() => null, { say: 'Okay.' }]])
+    await dropped(d, call, ['Uh, just trying'])
+    await ask(call.id, 'Uh, just trying to work on the kit.')
+    expect(payloads(seen)[1].user_text).toBe('Uh, just trying to work on the kit.')
+    expect(all(d.db, "SELECT 1 FROM call_events WHERE call_id = ? AND type = 'user_text_rewritten'", call.id)).toHaveLength(1)
+  })
+  it('onlyFiller', () => {
+    expect(onlyFiller(null)).toBe(true)
+    expect(onlyFiller(FILLER_LINES[2] + FILLER2_LINE)).toBe(true)
+    expect(onlyFiller(FILLER_LINES[0] + 'It is Thursday.')).toBe(false)
   })
 })
 

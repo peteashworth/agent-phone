@@ -10,7 +10,7 @@ import { setDoNotCall } from '../contacts.ts'
 import { detectHardStop, CLOSE_LINES } from '../voice/hardStops.ts'
 import { OutputFilter } from '../voice/outputFilter.ts'
 import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '../voice/brain.ts'
-import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine, alreadySaid } from '../voice/brainTurn.ts'
+import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine, alreadySaid, takeContinuation } from '../voice/brainTurn.ts'
 import type { FilterOptions } from '../voice/outputFilter.ts'
 import { awaitHuman, applyGreeting, isMachine } from '../postcall.ts'
 import { DISCLOSURE } from '../voice/lines.ts'
@@ -109,8 +109,9 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         if (now) log = new TurnLog(d, now, kind, 'disclosure')
         source = (async function* () { yield DISCLOSURE })()
       } else if (now && kind === 'jasmine') {
+        const cont = takeContinuation(d, now.id) // before this turn's row exists: it looks at the previous one
         log = new TurnLog(d, now, kind, 'brain')
-        const p = prepareJasmineTurn(d, now, messages, log)
+        const p = prepareJasmineTurn(d, now, messages, log, cont)
         filterOpts = p.filter
         source = runJasmineTurn(d, p, log, ac.signal)
       } else {

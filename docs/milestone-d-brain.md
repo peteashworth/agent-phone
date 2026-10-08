@@ -63,6 +63,8 @@ Expected result: `{ "ready": true }`.
 - `interrupted` is set when the person cut off the last reply. `spoken` is what EL actually played, so the session knows
   what the person did and didn't hear.
 - `code_phrase` is `null`, `"verified"` or `"incorrect"` (§7). The phrase itself is never sent.
+- `continues` (only sometimes): the `seq` of an earlier turn this one replaces (continuation, §5). Its `user_text`
+  already holds the earlier words too, and the answer to the earlier turn was never spoken.
 
 Expected result:
 ```json
@@ -117,6 +119,12 @@ logged, tested and consistent.
 - **Barge-in:** if the person speaks while a turn is pending, EL aborts our SSE request. We cancel that job and send the
   new words as the next `turn`, with `interrupted` filled in. The host may still be working on the old job; its answer
   gets 409 and is dropped. The session must accept that some answers are never spoken.
+- **Continuation** (Oct 8): ElevenLabs can end a turn on a short pause and then send the rest of the sentence as a new
+  request, dropping the first. If the previous turn spoke nothing but a filler and was dropped less than
+  `CONTINUATION_MS` (1.5s) earlier, or is still open, the new request carries it on. The old job is cancelled, the
+  new one gets the whole sentence in `user_text` plus `continues: <old seq>` (if the host had picked the old one).
+  It is logged as `continued`, not `barge_in`, and has no `interrupted`. Once real answer text has been spoken it
+  is a barge-in as before. `user_text` is never empty: if EL rewrote the last user message in place, it is sent again.
 
 ## 6. Order of checks per turn (all on the droplet, before Jasmine sees anything)
 
