@@ -3,7 +3,10 @@
 import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { type Deps, type CallRow, getCall, hangup, event, LIVE_STATUSES } from './calls.ts'
-import { all, run, audit } from './db.ts'
+import { all, one, run, audit } from './db.ts'
+import { enqueueJob } from './brainJobs.ts'
+import { findPhrase, removePhrase } from './voice/codePhrase.ts'
+import { sha256 } from './voice/brainTurn.ts'
 
 // ---------------------------------------------------------------- answering machines
 
@@ -77,9 +80,9 @@ async function finalizeCalls(d: Deps): Promise<string[]> {
     try {
       const conv = await d.elevenlabs.getConversation(call.el_conversation_id)
       if (!DONE.has(conv.status) && !last) continue // still processing (analysis lands ~seconds after the call)
-      const transcript: Turn[] = (conv.transcript ?? [])
+      const transcript = redact(d, call.id, (conv.transcript ?? [])
         .filter(t => t.message)
-        .map(t => ({ role: t.role === 'user' ? 'user' : 'agent', text: t.message!, t: t.time_in_call_secs ?? null }))
+        .map(t => ({ role: t.role === 'user' ? 'user' : 'agent', text: t.message!, t: t.time_in_call_secs ?? null })))
       run(db, 'UPDATE calls SET transcript = ?, summary = ?, summary_title = ?, el_cost_credits = ? WHERE id = ?',
         JSON.stringify(transcript), conv.analysis?.transcript_summary ?? null, conv.analysis?.call_summary_title ?? null,
         conv.metadata?.cost ?? null, call.id)
@@ -95,10 +98,43 @@ async function finalizeCalls(d: Deps): Promise<string[]> {
   return done
 }
 
-function finish(d: Deps, id: string, how: string) {
-  run(d.db, 'UPDATE calls SET finalized_at = ? WHERE id = ?', now(), id)
-  event(d.db, id, 'server', 'finalized', { how })
+/**
+ * Code-phrase turns never reach our stored transcript: user lines that held the phrase lose it, and attempt turns
+ * (logged as hashes in call_turns) are replaced. ElevenLabs keeps its own copy (docs/milestone-d-brain.md §7 gap).
+ */
+export function redact(d: Deps, callId: string, transcript: Turn[]): Turn[] {
+  const phrase = d.config.CODE_PHRASE
+  const hashes = new Set(all<{ redact_hash: string }>(d.db,
+    'SELECT redact_hash FROM call_turns WHERE call_id = ? AND redact_hash IS NOT NULL', callId).flatMap(r => r.redact_hash.split(',')))
+  if (!phrase && !hashes.size) return transcript
+  return transcript.map(t => {
+    if (t.role !== 'user') return t
+    if (phrase && findPhrase(t.text, phrase)) return { ...t, text: (removePhrase(t.text, phrase).text + ' [code phrase removed]').trim() }
+    if (hashes.has(sha256(t.text))) return { ...t, text: '[code phrase attempt removed]' }
+    return t
+  })
 }
+
+function finish(d: Deps, id: string, how: string) {
+  // brief_personal lives only as long as the call.
+  run(d.db, 'UPDATE calls SET finalized_at = ?, brief_personal = NULL WHERE id = ?', now(), id)
+  event(d.db, id, 'server', 'finalized', { how })
+  callEndNotice(d, id)
+}
+
+/** BRAIN=jasmine: once the record is final, the phone session gets the outcome (and passes a note to Jasmine). */
+function callEndNotice(d: Deps, id: string) {
+  const warmed = one(d.db, "SELECT 1 FROM brain_jobs WHERE call_id = ? AND type = 'call.start' AND status = 'done' AND json_extract(result, '$.ready') = 1", id)
+  if (!warmed) return
+  const call = getCall(d.db, id)!
+  enqueueJob(d.db, id, 'call.end', {
+    end_reason: call.end_reason ?? call.status, status: call.status, duration_s: call.duration_s,
+    answered_by: call.answered_by, summary: call.summary,
+    transcript: (JSON.parse(call.transcript ?? '[]') as Turn[]).map(t => ({ role: t.role, text: t.text })),
+    notes: JSON.parse(call.notes ?? '[]') as string[],
+  }, CALL_END_TTL_MS)
+}
+const CALL_END_TTL_MS = 6 * 3600_000 // the host may be down for a while; the notice waits
 
 async function saveRecording(d: Deps, call: CallRow) {
   try {

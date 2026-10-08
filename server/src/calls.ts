@@ -8,10 +8,21 @@ import { dialChecks } from './safety.ts'
 import type { ElevenLabsClient } from './voice/elevenlabs.ts'
 import type { TwilioClient } from './voice/twilio.ts'
 import type { Brain } from './voice/brain.ts'
+import { loadFacts, pickFacts, factsFor } from './facts.ts'
+import { brainOnline, enqueueJob, awaitJob, cancelJob } from './brainJobs.ts'
+import { DISCLOSURE } from './voice/lines.ts'
 
 export type Deps = { config: Config; db: DB; elevenlabs: ElevenLabsClient; twilio: TwilioClient; clock?: () => Date; brain?: Brain }
 
-export type PlaceCallInput = { to: string; purpose: string; brief: string; plan?: string; dry_run?: boolean }
+export type BrainKind = 'canned' | 'openai' | 'jasmine'
+export type PlaceCallInput = {
+  to: string; purpose: string; brief: string; plan?: string; dry_run?: boolean
+  /** Withheld from every brain until the code phrase is verified on the call (jasmine brain only). */
+  brief_personal?: string
+  brain?: BrainKind
+  /** Fact ids or topics from FACTS_FILE this call may use (share rules still apply). */
+  facts?: string[]
+}
 
 export type CallRow = {
   id: string; agent_id: string; to_e164: string; from_e164: string; from_label: string
@@ -25,6 +36,8 @@ export type CallRow = {
   summary_title: string | null; summary: string | null; transcript: string | null
   el_cost_credits: number | null; twilio_price_usd: number | null; finalized_at: string | null; finalize_attempts: number
   recording_path: string | null; recording_bytes: number | null; recording_deleted_at: string | null
+  brain: BrainKind | null; brief_personal: string | null; has_brief_personal: number; facts: string | null; tier: 'public' | 'personal'
+  code_asked: number; code_attempts: number; notes: string | null; brain_seq: number
 }
 
 /** A refusal the caller should see verbatim (not a server fault). */
@@ -33,7 +46,7 @@ export class CallRefused extends Error {
   constructor(code: string, message: string) { super(message); this.code = code }
 }
 
-export const LIVE_STATUSES = ['queued', 'initiated', 'ringing', 'in-progress'] as const
+export const LIVE_STATUSES = ['warming', 'queued', 'initiated', 'ringing', 'in-progress'] as const
 const TERMINAL = new Set(['completed', 'busy', 'no-answer', 'failed', 'canceled'])
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 const clock = (d: Deps) => (d.clock ?? (() => new Date()))()
@@ -52,6 +65,19 @@ export async function placeCall(d: Deps, agentId: string, input: PlaceCallInput)
   const to = toE164(input.to) ?? refuse('invalid_number', `Not a valid phone number: ${input.to}`, null)
   if (!input.purpose.trim() || !input.brief.trim()) refuse('missing_fields', 'purpose and brief are required', to)
 
+  const brain: BrainKind = input.brain ?? c.BRAIN
+  if (brain === 'openai' && (!c.BRAIN_URL || !c.BRAIN_MODEL)) refuse('brain_not_configured', 'brain "openai" needs BRAIN_URL and BRAIN_MODEL on the server', to)
+  if (input.brief_personal?.trim()) {
+    if (brain !== 'jasmine') refuse('brief_personal_needs_jasmine', 'brief_personal is only used with brain "jasmine"', to)
+    if (!c.PERSONAL_OK_NUMBERS.includes(to)) refuse('brief_personal_not_allowed', `${to} can never unlock the personal tier, so brief_personal would never be used`, to)
+  }
+  const factSel = [...new Set(input.facts ?? [])]
+  if (factSel.length) {
+    let unknown: string[]
+    try { unknown = pickFacts(loadFacts(c), factSel).unknown } catch (e) { return refuse('facts_unavailable', (e as Error).message, to) }
+    if (unknown.length) refuse('unknown_facts', `No fact with id or topic: ${unknown.join(', ')}`, to)
+  }
+
   let fromLabel = '', fromE164 = ''
   try { ({ label: fromLabel, e164: fromE164 } = fromFor(db, to)) } catch (e) { refuse('no_caller_id', (e as Error).message, to) }
 
@@ -65,11 +91,14 @@ export async function placeCall(d: Deps, agentId: string, input: PlaceCallInput)
   const token = trusted ? null : 'cfm_' + randomBytes(18).toString('base64url')
   const expires = new Date(clock(d).getTime() + c.CONFIRM_TTL_MIN * 60_000).toISOString()
   run(db, `INSERT INTO calls (id, agent_id, to_e164, from_e164, from_label, purpose, brief, plan, dry_run, status, max_seconds,
-                             confirm_hash, confirm_expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             confirm_hash, confirm_expires_at, brain, brief_personal, has_brief_personal, facts)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id, agentId, to, fromE164, fromLabel, input.purpose, input.brief, input.plan ?? null, dry ? 1 : 0,
-    token ? 'awaiting_confirmation' : 'pending', c.MAX_CALL_SECONDS, token && sha256(token), token && expires)
-  audit(db, agentId, 'call.place', id, { to, from: fromLabel, dry, needs_confirmation: !trusted })
+    token ? 'awaiting_confirmation' : 'pending', c.MAX_CALL_SECONDS, token && sha256(token), token && expires,
+    brain, input.brief_personal?.trim() || null, input.brief_personal?.trim() ? 1 : 0, factSel.length ? JSON.stringify(factSel) : null)
+  // Fact ids only, never values; brief_personal only as a flag.
+  audit(db, agentId, 'call.place', id, { to, from: fromLabel, dry, needs_confirmation: !trusted, brain,
+    facts: factSel, has_brief_personal: !!input.brief_personal?.trim() })
 
   if (token) {
     event(db, id, 'server', 'awaiting_confirmation', { expires_at: expires })
@@ -109,8 +138,71 @@ async function startCall(d: Deps, id: string): Promise<CallRow> {
     event(db, id, 'server', 'dry_run', { reason: call.dry_run ? 'requested' : 'DIALING_ENABLED=false' })
     return getCall(db, id)!
   }
+  if (call.brain === 'jasmine') {
+    if (!brainOnline(c, db)) {
+      run(db, "UPDATE calls SET status = 'refused', error = ? WHERE id = ?", 'brain_offline: the host adapter is not polling', id)
+      audit(db, call.agent_id, 'call.refused', id, { code: 'brain_offline' })
+      throw new CallRefused('brain_offline', 'Jasmine\'s phone brain (host adapter) is offline; nothing was dialed')
+    }
+    // Claim the line now (one call at a time), dial only once the phone session says it is ready.
+    run(db, "UPDATE calls SET status = 'warming' WHERE id = ?", id)
+    const job = enqueueJob(db, id, 'call.start', callStartPayload(d, getCall(db, id)!), c.WARM_TIMEOUT_S * 1000)
+    event(db, id, 'server', 'warming', { job_id: job.id, timeout_s: c.WARM_TIMEOUT_S })
+    const p = warmThenDial(d, id, job.id).finally(() => warming.delete(id))
+    warming.set(id, p)
+    return getCall(db, id)!
+  }
   run(db, "UPDATE calls SET status = 'queued' WHERE id = ?", id)
+  await dial(d, id)
+  return getCall(db, id)!
+}
 
+/** Background warm-ups in flight (tests await these). */
+export const warming = new Map<string, Promise<void>>()
+
+/** What the phone session gets before the call: everything public, nothing from brief_personal or code facts. */
+export function callStartPayload(d: Deps, call: CallRow) {
+  const contact = one<{ name: string | null; trusted: number }>(d.db, 'SELECT name, trusted FROM contacts WHERE e164 = ?', call.to_e164)
+  const picked = call.facts ? pickFacts(loadFacts(d.config), JSON.parse(call.facts) as string[]).picked : []
+  return {
+    callee: { name: contact?.name ?? null, relationship: contact ? (contact.trusted ? 'trusted' : 'contact') : 'unknown' },
+    from_label: call.from_label, purpose: call.purpose, brief: call.brief, plan: call.plan,
+    facts: factsFor(picked, 'anyone'),
+    has_brief_personal: !!call.has_brief_personal,
+    disclosure: DISCLOSURE,
+    rules: { max_seconds: call.max_seconds, tier: 'public', style: 'spoken prose, 1-3 sentences, no markdown/emoji/URLs' },
+  }
+}
+
+async function warmThenDial(d: Deps, id: string, jobId: string): Promise<void> {
+  const { config: c, db } = d
+  const job = await awaitJob(db, jobId, c.WARM_TIMEOUT_S * 1000)
+  const ready = job.status === 'done' && (JSON.parse(job.result ?? '{}') as { ready?: boolean }).ready === true
+  const call = getCall(db, id)!
+  if (call.status !== 'warming') return // cancelled meanwhile
+  if (!ready) {
+    cancelJob(db, jobId, 'expired')
+    const why = job.status === 'done' ? 'host answered without ready:true' : job.status === 'failed' ? 'host error' : 'no answer in time'
+    run(db, "UPDATE calls SET status = 'failed', end_reason = 'brain_not_ready', error = ?, ended_at = ? WHERE id = ?", `brain_not_ready: ${why}`, now(), id)
+    event(db, id, 'server', 'brain_not_ready', { job_status: job.status })
+    audit(db, 'system', 'call.brain_not_ready', id, { job_status: job.status })
+    return
+  }
+  // Time has passed (up to WARM_TIMEOUT_S): check again before dialing. The live-call check skips this call itself.
+  const bad = dialChecks(c, db, call.to_e164, false, clock(d), id)
+  if (bad) {
+    run(db, "UPDATE calls SET status = 'refused', error = ?, ended_at = ? WHERE id = ?", `${bad.code}: ${bad.message}`, now(), id)
+    audit(db, call.agent_id, 'call.refused', id, bad)
+    return
+  }
+  event(db, id, 'server', 'brain_ready', { job_id: jobId })
+  run(db, "UPDATE calls SET status = 'queued' WHERE id = ?", id)
+  await dial(d, id)
+}
+
+async function dial(d: Deps, id: string): Promise<void> {
+  const { config: c, db } = d
+  const call = getCall(db, id)!
   try {
     const reg = await d.elevenlabs.registerCall({
       from: call.from_e164, to: call.to_e164,
@@ -130,7 +222,6 @@ async function startCall(d: Deps, id: string): Promise<CallRow> {
     event(db, id, 'server', 'dial_error', { error: msg })
     audit(db, 'system', 'call.dial_error', id, { error: msg })
   }
-  return getCall(db, id)!
 }
 
 /** Server-enforced hangup (hard stop, watchdog). Waits delayMs so a close line can finish playing. */

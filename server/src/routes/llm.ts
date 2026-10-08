@@ -9,7 +9,9 @@ import { all, audit, run } from '../db.ts'
 import { setDoNotCall } from '../contacts.ts'
 import { detectHardStop, CLOSE_LINES } from '../voice/hardStops.ts'
 import { OutputFilter } from '../voice/outputFilter.ts'
-import { type ChatMessage, makeBrain, textOf } from '../voice/brain.ts'
+import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '../voice/brain.ts'
+import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine } from '../voice/brainTurn.ts'
+import type { FilterOptions } from '../voice/outputFilter.ts'
 import { awaitHuman, isMachine } from '../postcall.ts'
 
 type Body = { model?: string; messages?: ChatMessage[]; stream?: boolean }
@@ -37,7 +39,9 @@ export function identifyCall(d: Deps, messages: ChatMessage[]): CallRow | undefi
 
 export async function llmRoutes(app: FastifyInstance, d: Deps) {
   const { config: c, db } = d
-  const brain = d.brain ?? makeBrain(c)
+  // d.brain (tests) replaces whichever non-jasmine brain a call uses.
+  const configured: Brain = makeBrain(c), canned = cannedBrain()
+  const brainFor = (kind: string): Brain => d.brain ?? (kind === 'openai' ? configured : canned)
 
   const handler = async (req: { headers: Record<string, unknown>; body: unknown; log: FastifyInstance['log'] }, reply: FastifyReply) => {
     if (!c.CUSTOM_LLM_SECRET) return reply.code(503).send({ error: 'custom LLM endpoint is not configured' })
@@ -60,8 +64,13 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     const stop = prior ?? detectHardStop(lastUser, { afterDisclosure })
     req.log.info({ marker: callMarker(messages), call: call?.id ?? null, turns: messages.length, stop }, 'llm turn')
 
+    const kind = call?.brain ?? c.BRAIN
+    const ac = new AbortController()
+    let log: TurnLog | undefined
+    let filterOpts: FilterOptions = call ? filterOptions(d, call) : { intimate: c.INTIMATE_TERMS }
     let source: AsyncIterable<string>
     if (stop) {
+      if (call) log = new TurnLog(d, call, kind, prior ? 'closing' : 'hard_stop')
       source = (async function* () { yield CLOSE_LINES[stop] })()
       if (!prior) {
         req.log.warn({ call: call?.id, stop }, 'hard stop')
@@ -76,6 +85,7 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       // Answering machines: nothing from the brief is said until Twilio AMD says "human" (or the wait runs out).
       const now = call ? await awaitHuman(d, call) : undefined
       if (now && isMachine(now.answered_by)) {
+        log = new TurnLog(d, now, kind, 'voicemail')
         req.log.info({ call: now.id, answered_by: now.answered_by }, 'voicemail')
         if (c.VOICEMAIL_ACTION === 'message') {
           source = (async function* () { yield c.VOICEMAIL_LINE })()
@@ -83,16 +93,38 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         } else {
           source = (async function* () {})() // already hanging up; say nothing
         }
+      } else if (now?.hangup_requested_at) {
+        // Ending for another reason (brain_end, timeout, watchdog): never hand the turn back to a brain.
+        log = new TurnLog(d, now, kind, 'closing')
+        const line = closingLine(now)
+        source = (async function* () { if (line) yield line })()
+      } else if (now && kind === 'jasmine') {
+        log = new TurnLog(d, now, kind, 'brain')
+        const p = prepareJasmineTurn(d, now, messages, log)
+        filterOpts = p.filter
+        source = runJasmineTurn(d, p, log, ac.signal)
       } else {
-        source = brain.reply(messages)
+        if (now) log = new TurnLog(d, now, kind, 'brain')
+        const turnLog = log
+        const inner = brainFor(kind).reply(scrubMessages(c.CODE_PHRASE, messages), ac.signal)
+        source = (async function* () { for await (const t of inner) { turnLog?.mark('reply'); yield t } })()
       }
     }
+    if (log && log.kind !== 'brain') log.outcome = log.kind
 
-    const filter = new OutputFilter(c.PRIVATE_TERMS)
+    const filter = new OutputFilter(c.PRIVATE_TERMS, filterOpts)
+    /** Text cleared by the filter on its way to ElevenLabs. Timing counts only the answer, not fillers. */
+    const out = (text: string) => {
+      if (!text) return
+      log?.spoke(text)
+      if (log?.has('reply')) { log.mark('filtered') }
+    }
+    const sent = () => { if (log?.has('filtered')) log.mark('tts') }
     const id = 'chatcmpl-' + randomBytes(8).toString('hex'), created = Math.floor(Date.now() / 1000), model = body.model ?? c.BRAIN
     const chunk = (delta: object, finish: string | null = null) =>
       `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
     const finish = () => {
+      log?.save()
       if (filter.blocked.length) {
         audit(db, 'system', 'llm.output_blocked', call?.id ?? null, { reasons: filter.blocked }) // reasons only, never the text
         if (call) run(db, 'INSERT INTO call_events (call_id, source, type, data) VALUES (?, ?, ?, ?)',
@@ -102,8 +134,8 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
 
     if (body.stream === false) {
       let text = ''
-      try { for await (const t of source) text += filter.push(t) } catch (e) { req.log.error(e, 'brain failed') }
-      text += filter.flush()
+      try { for await (const t of source) { const o = filter.push(t); out(o); text += o } } catch (e) { req.log.error(e, 'brain failed'); if (log) log.outcome = 'error' }
+      const tail = filter.flush(); out(tail); text += tail; sent()
       finish()
       return { id, object: 'chat.completion', created, model,
         choices: [{ index: 0, message: { role: 'assistant', content: text.trim() }, finish_reason: 'stop' }] }
@@ -113,19 +145,25 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     const res = reply.raw
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' })
     let closed = false
-    res.on('close', () => { closed = true })
+    res.on('close', () => {
+      if (res.writableEnded) return
+      closed = true
+      ac.abort() // barge-in: ElevenLabs dropped the request
+      if (log) { log.outcome = 'barge_in'; log.save() }
+    })
     res.write(chunk({ role: 'assistant', content: '' }))
     try {
       for await (const t of source) {
         if (closed) break
-        const out = filter.push(t)
-        if (out) res.write(chunk({ content: out }))
+        const o = filter.push(t)
+        if (o) { out(o); res.write(chunk({ content: o })); sent() }
       }
     } catch (e) {
       req.log.error(e, 'brain failed')
+      if (log) log.outcome = 'error'
     }
     const tail = filter.flush()
-    if (tail && !closed) res.write(chunk({ content: tail }))
+    if (tail && !closed) { out(tail); res.write(chunk({ content: tail })); sent() }
     finish()
     if (!closed) { res.write(chunk({}, 'stop')); res.end('data: [DONE]\n\n') }
   }

@@ -4,7 +4,23 @@
 
 export const BLOCKED_LINE = "Sorry, I can't share that on this call."
 
-export type BlockReason = 'email' | 'card_number' | 'ssn' | 'street_address' | 'private_term'
+export type BlockReason = 'email' | 'card_number' | 'ssn' | 'street_address' | 'private_term' | 'private_fact' | 'intimate'
+
+// Blocked in every tier, on top of INTIMATE_TERMS (docs/phone-persona.md: no intimate or romantic content on a call).
+export const DEFAULT_INTIMATE_TERMS = ['girlfriend', 'sexy', 'sex', 'sexual', 'naked', 'nude', 'lingerie', 'intimate',
+  'make love', 'making love', 'turn me on', 'foreplay', 'orgasm', 'aroused', 'horny', 'erotic',
+  'in bed together', 'my love', 'i love you']
+
+export type FilterOptions = {
+  /** Personal tier (code phrase verified): PRIVATE_TERMS are relaxed. Nothing else is. */
+  personal?: boolean
+  /** Extra intimate terms (config INTIMATE_TERMS); blocked in every tier together with DEFAULT_INTIMATE_TERMS. */
+  intimate?: string[]
+  /** Exact fact values this call may say; exempt from the pattern checks (a VIN, an address the brief allows). */
+  allow?: string[]
+  /** Fact values that must never be said on this call (locked code facts, every never fact). */
+  block?: string[]
+}
 
 const EMAIL = /[a-z0-9._%+-]+\s*(?:@|\bat\b)\s*[a-z0-9-]+(?:\s*(?:\.|\bdot\b)\s*[a-z0-9-]+)*\s*(?:\.|\bdot\b)\s*(?:com|net|org|edu|gov|io|ai|co|us|me|info)\b/i
 const SSN = /\b\d{3}[- ]\d{2}[- ]\d{4}\b/
@@ -24,17 +40,38 @@ function luhn(digits: string): boolean {
 
 const squash = (s: string) => s.toLowerCase().replace(/\s+/g, ' ')
 
-export function checkText(text: string, privateTerms: string[]): BlockReason | null {
-  if (EMAIL.test(text)) return 'email'
-  if (SSN.test(text)) return 'ssn'
-  for (const m of text.match(DIGIT_RUN) ?? []) {
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const wordsRe = (terms: string[]) => terms.length
+  ? new RegExp(String.raw`(?<![a-z0-9])(?:${terms.map(t => escape(squash(t))).join('|')})(?![a-z0-9])`, 'i') : null
+const INTIMATE = wordsRe(DEFAULT_INTIMATE_TERMS)!
+
+export function checkText(text: string, privateTerms: string[], o: FilterOptions = {}): BlockReason | null {
+  let t = squash(text)
+  if (INTIMATE.test(t) || wordsRe(o.intimate ?? [])?.test(t)) return 'intimate'
+  if (o.block?.some(v => v && t.includes(squash(v)))) return 'private_fact'
+  for (const v of o.allow ?? []) if (v) t = t.split(squash(v)).join(' allowed ')
+  if (EMAIL.test(t)) return 'email'
+  if (SSN.test(t)) return 'ssn'
+  for (const m of t.match(DIGIT_RUN) ?? []) {
     const d = m.replace(/\D/g, '')
     if (d.length >= 13 && d.length <= 19 && luhn(d)) return 'card_number'
   }
-  if (STREET.test(text)) return 'street_address'
-  const t = squash(text)
-  if (privateTerms.some(p => p && t.includes(squash(p)))) return 'private_term'
+  if (STREET.test(t)) return 'street_address'
+  if (!o.personal && privateTerms.some(p => p && t.includes(squash(p)))) return 'private_term'
   return null
+}
+
+/**
+ * Makes model text safe to read aloud: drops [[control tags]], markdown, URLs and emoji. Bracket audio tags like
+ * [warmly] stay (ElevenLabs uses them for delivery and doesn't read them).
+ */
+export function speakable(text: string): string {
+  return text
+    .replace(/\[\[[^\]]*\]\]/g, '')
+    .replace(/https?:\/\/\S+|www\.\S+/gi, '')
+    .replace(/[*_#`~>|]+/g, '')
+    .replace(/\p{Extended_Pictographic}️?/gu, '')
+    .replace(/[ \t]{2,}/g, ' ')
 }
 
 // Sentence end: . ! ? followed by whitespace. "1.5", "a@b.com" and "Dr. Smith"-style abbreviations mostly don't split
@@ -46,7 +83,8 @@ export class OutputFilter {
   private lastBlocked = false
   readonly blocked: BlockReason[] = []
   private terms: string[]
-  constructor(terms: string[]) { this.terms = terms }
+  private opts: FilterOptions
+  constructor(terms: string[], opts: FilterOptions = {}) { this.terms = terms; this.opts = opts }
 
   /** Feed streamed text; returns whatever is now safe to speak (possibly ''). */
   push(chunk: string): string {
@@ -68,8 +106,10 @@ export class OutputFilter {
     return out
   }
 
-  private emit(sentence: string): string {
-    const why = checkText(sentence, this.terms)
+  private emit(raw: string): string {
+    const sentence = speakable(raw)
+    if (!sentence.trim()) return ''
+    const why = checkText(sentence, this.terms, this.opts)
     if (!why) { this.lastBlocked = false; return sentence }
     this.blocked.push(why)
     if (this.lastBlocked) return '' // one refusal line per run of blocked sentences
