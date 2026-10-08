@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "facts": [
+    { "id": "office_hours", "label": "Pete's usual availability", "value": "weekdays after 10am Mountain", "share": "anyone", "topics": ["scheduling"] },
+    { "id": "callback_number", "label": "Number to call Pete back", "value": "+1 555 010 0000", "share": "anyone", "topics": ["scheduling"] },
+    { "id": "home_address", "label": "Pete's home address", "value": "123 Example Street, Sampletown", "share": "code", "topics": ["delivery"] },
+    { "id": "card_last4", "label": "Card on file, last four", "value": "0000", "share": "never", "topics": [] }
+  ]
+}

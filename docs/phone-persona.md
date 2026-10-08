@@ -1,4 +1,4 @@
-# Phone session instructions (DRAFT for Jasmine/Pete review)
+# Phone session instructions (approved Oct 8 for Milestone D; the phone agent group's whole instructions file)
 
 Intended as the whole instructions file for the separate phone agent group. Nothing else is loaded, and there is no
 shared memory. Assumes the turn/reply contract in `milestone-d-brain.md`; the host adapter formats each turn as shown
