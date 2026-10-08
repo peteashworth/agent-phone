@@ -199,3 +199,13 @@ host.
 D0: latency measurement through the adapter (no build). D1: brain jobs, the long-poll, brain keys, `BRAIN=jasmine` with
 a fake host in tests. D2: pre-warm in `place_call`, fillers, timeout exit, barge-in. D3: code phrase, tiers,
 redaction. D4: live test, Pete only, with Pete's host adapter.
+
+## 12. Additions from the persona draft (Oct 8)
+
+- **Reply format:** the session writes plain spoken text plus `[[end_call]]`, `[[ask_code]]`, `[[note: …]]` tag lines
+  (`phone-persona.md`). The host converts that into the JSON result. That's easier for the model than strict JSON.
+- **Personal part of the brief:** `place_call` gets an optional `brief_personal`. The droplet withholds it until the
+  code phrase is verified, then sends it once with that turn. Personal details never reach the session on a call that
+  stays public.
+- **Separate agent group:** Jasmine recommends a separate phone agent group (not a session in her main group), so the
+  phone session cannot load her `CLAUDE.local.md`. Pending Pete.
