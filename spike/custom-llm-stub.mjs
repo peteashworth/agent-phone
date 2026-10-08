@@ -26,7 +26,8 @@ http.createServer(async (req, res) => {
   if (CANNED) {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
     const id = `chatcmpl-${Date.now()}`, send = o => res.write(`data: ${JSON.stringify(o)}\n\n`)
-    const n = messages.filter(m => m.role === 'assistant').length, first = performance.now() - t0
+    // ElevenLabs sends its first_message as an assistant turn, so it doesn't count as one of ours
+    const n = Math.max(0, messages.filter(m => m.role === 'assistant').length - 1), first = performance.now() - t0
     for (const w of SCRIPT[Math.min(n, SCRIPT.length - 1)].split(/(?<= )/))
       send({ id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: 'canned',
         choices: [{ index: 0, delta: { content: w }, finish_reason: null }] })
