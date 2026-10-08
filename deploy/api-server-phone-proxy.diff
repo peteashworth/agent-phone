@@ -1,0 +1,39 @@
+--- api-server.js.orig	2026-10-08 15:03:44.512994880 -0600
++++ api-server.js	2026-10-08 15:03:44.641996235 -0600
+@@ -19,6 +19,11 @@
+ if (!fs.existsSync(VIDEOS_DIR)) fs.mkdirSync(VIDEOS_DIR, { recursive: true })
+ const API_SECRET = process.env.API_SECRET || 'jasmine-local'
+ 
++// Agent-phone call log (Milestone C). Read-only proxy so the dashboard never holds the phone key.
++// PHONE_READ_KEY = a read-scope key from the droplet: node src/cli.ts key:create jasmine --scope read
++const PHONE_API_URL = (process.env.PHONE_API_URL || 'https://jasmine.ashworthhub.com/phone').replace(/\/$/, '')
++const PHONE_READ_KEY = process.env.PHONE_READ_KEY || ''
++
+ // ─── SQLite task storage ──────────────────────────────────────────────────────
+ const DB_PATH = path.join(__dirname, 'tasks.db')
+ const db = new DatabaseSync(DB_PATH)
+@@ -481,6 +486,24 @@
+       return
+     }
+ 
++    // GET /api/phone/calls[/:id[/recording]] → droplet /phone/api/calls… (bearer added here)
++    const phoneMatch = url.pathname.match(/^\/api\/phone\/(calls(?:\/call_[\w-]+(?:\/recording)?)?)$/)
++    if (phoneMatch) {
++      if (!PHONE_READ_KEY) { res.writeHead(503, headers); res.end(JSON.stringify({ error: 'PHONE_READ_KEY not set' })); return }
++      const target = `${PHONE_API_URL}/api/${phoneMatch[1]}${url.search}`
++      fetch(target, { headers: { authorization: `Bearer ${PHONE_READ_KEY}` }, signal: AbortSignal.timeout(15000) })
++        .then(async r => {
++          const type = r.headers.get('content-type') || 'application/json'
++          res.writeHead(r.status, { ...CORS, 'Content-Type': type, 'Cache-Control': 'no-store' })
++          res.end(Buffer.from(await r.arrayBuffer()))
++        })
++        .catch(e => {
++          if (!res.headersSent) res.writeHead(502, headers)
++          res.end(JSON.stringify({ error: 'phone service unreachable', detail: e.message }))
++        })
++      return
++    }
++
+     const match = url.pathname.match(/^\/api\/(\w+)$/)
+     if (match) {
+       const data = readData(match[1])
