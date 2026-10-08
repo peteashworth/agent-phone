@@ -1,0 +1,28 @@
+# /etc/systemd/system/agent-phone.service
+[Unit]
+Description=agent-phone server (place_call + MCP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=agent-phone
+Group=agent-phone
+WorkingDirectory=/opt/agent-phone/server
+# Root-only 0600 file; systemd reads it before dropping to User=.
+EnvironmentFile=/etc/agent-phone.env
+Environment=NODE_ENV=production NODE_NO_WARNINGS=1
+# Creates /var/lib/agent-phone owned by agent-phone (set DATA_DIR=/var/lib/agent-phone).
+StateDirectory=agent-phone
+StateDirectoryMode=0700
+ExecStart=/usr/bin/node src/index.ts
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/agent-phone
+
+[Install]
+WantedBy=multi-user.target
