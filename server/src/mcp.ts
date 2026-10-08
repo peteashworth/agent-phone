@@ -8,6 +8,7 @@ import { type Deps, type CallRow, CallRefused, placeCall, confirmCall, getCall, 
 import { listNumbers } from './numbers.ts'
 import { addContact, updateContact, getContact } from './contacts.ts'
 import { authenticate } from './auth.ts'
+import { callDetail } from './routes/api.ts'
 
 const json = (v: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(v, null, 2) }] })
 const fail = (msg: string) => ({ content: [{ type: 'text' as const, text: msg }], isError: true })
@@ -18,6 +19,8 @@ function view(c: CallRow) {
     from: c.from_e164, from_label: c.from_label, purpose: c.purpose, created_at: c.created_at,
     confirm_expires_at: c.status === 'awaiting_confirmation' ? c.confirm_expires_at : undefined,
     started_at: c.started_at, ended_at: c.ended_at, duration_s: c.duration_s, end_reason: c.end_reason, error: c.error,
+    answered_by: c.answered_by ?? undefined, summary: c.summary ?? undefined, cost_usd: c.cost_usd ?? undefined,
+    has_recording: c.recording_path ? true : undefined,
   }
 }
 
@@ -60,13 +63,15 @@ export function buildMcpServer(d: Deps, agentId: string): McpServer {
 
   s.registerTool('get_call', {
     title: 'Get a call',
-    description: 'Status and outcome of one call, with its status history.',
-    inputSchema: { id: z.string() },
+    description: 'Status and outcome of one call, with its status history. After the call ends (about a minute later) it also ' +
+      'has the summary, real cost and answered_by (human, machine_*, timeout). Set transcript:true for the full transcript.',
+    inputSchema: { id: z.string(), transcript: z.boolean().optional() },
     annotations: { readOnlyHint: true },
-  }, guard(async ({ id }) => {
+  }, guard(async ({ id, transcript }) => {
     const c = getCall(d.db, id)
     if (!c) throw new Error(`No call ${id}`)
-    return { ...withContact(c), brief: c.brief, plan: c.plan, events: callEvents(d.db, id) }
+    return { ...withContact(c), brief: c.brief, plan: c.plan, events: callEvents(d.db, id),
+      ...(transcript ? { transcript: callDetail(d, c).transcript } : {}) }
   }))
 
   s.registerTool('list_calls', {

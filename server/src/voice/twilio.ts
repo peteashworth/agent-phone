@@ -1,13 +1,18 @@
 import type { Config } from '../config.ts'
 import { type Fetch, ProviderError } from './http.ts'
 
-export type Dial = { to: string; from: string; twiml: string; timeLimit: number; statusCallback: string }
+export type Dial = {
+  to: string; from: string; twiml: string; timeLimit: number; statusCallback: string
+  /** Async answering-machine detection: Twilio posts AnsweredBy here while the call carries on. */
+  amd?: { callback: string; timeoutS: number }
+}
 
 export type TwilioClient = {
   createCall(d: Dial): Promise<{ sid: string; status: string }>
   /** Ends a live call (Status=completed). */
   endCall(sid: string): Promise<void>
-  fetchCall(sid: string): Promise<{ status: string; duration: number | null }>
+  /** price is positive USD, null until Twilio has rated the call (a few minutes after it ends). */
+  fetchCall(sid: string): Promise<{ status: string; duration: number | null; price?: number | null }>
 }
 
 export function twilioClient(c: Config, f: Fetch = fetch): TwilioClient {
@@ -29,8 +34,8 @@ export function twilioClient(c: Config, f: Fetch = fetch): TwilioClient {
       const res = await f(callUrl(sid), { method: 'GET', headers: { authorization: auth() } })
       const body = await res.text()
       if (!res.ok) throw new ProviderError('twilio', res.status, body)
-      const j = JSON.parse(body) as { status: string; duration: string | null }
-      return { status: j.status, duration: j.duration ? Number(j.duration) : null }
+      const j = JSON.parse(body) as { status: string; duration: string | null; price: string | null }
+      return { status: j.status, duration: j.duration ? Number(j.duration) : null, price: j.price != null ? Math.abs(Number(j.price)) : null }
     },
     async createCall(d) {
       const authorization = auth()
@@ -39,6 +44,11 @@ export function twilioClient(c: Config, f: Fetch = fetch): TwilioClient {
         StatusCallback: d.statusCallback, StatusCallbackMethod: 'POST',
       })
       for (const e of ['initiated', 'ringing', 'answered', 'completed']) form.append('StatusCallbackEvent', e)
+      if (d.amd) {
+        form.set('MachineDetection', 'Enable'); form.set('AsyncAmd', 'true')
+        form.set('AsyncAmdStatusCallback', d.amd.callback); form.set('AsyncAmdStatusCallbackMethod', 'POST')
+        form.set('MachineDetectionTimeout', String(d.amd.timeoutS))
+      }
       const res = await f(`${c.TWILIO_API_BASE}/2010-04-01/Accounts/${c.TWILIO_ACCOUNT_SID}/Calls.json`, {
         method: 'POST',
         headers: {

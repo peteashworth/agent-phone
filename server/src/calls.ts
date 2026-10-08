@@ -21,6 +21,10 @@ export type CallRow = {
   twilio_sid: string | null; el_conversation_id: string | null
   confirm_hash: string | null; confirm_expires_at: string | null; confirmed_by: string | null
   hangup_requested_at: string | null; cost_usd: number | null
+  amd: number; answered_by: string | null; amd_at: string | null
+  summary_title: string | null; summary: string | null; transcript: string | null
+  el_cost_credits: number | null; twilio_price_usd: number | null; finalized_at: string | null; finalize_attempts: number
+  recording_path: string | null; recording_bytes: number | null; recording_deleted_at: string | null
 }
 
 /** A refusal the caller should see verbatim (not a server fault). */
@@ -115,7 +119,9 @@ async function startCall(d: Deps, id: string): Promise<CallRow> {
     run(db, 'UPDATE calls SET el_conversation_id = ? WHERE id = ?', reg.conversationId, id)
     const tw = await d.twilio.createCall({
       to: call.to_e164, from: call.from_e164, twiml: reg.twiml, timeLimit: call.max_seconds, statusCallback: statusCallbackUrl(c, id),
+      ...(c.AMD_ENABLED ? { amd: { callback: webhookUrl(c, 'amd', id), timeoutS: c.AMD_TIMEOUT_S } } : {}),
     })
+    if (c.AMD_ENABLED) run(db, 'UPDATE calls SET amd = 1 WHERE id = ?', id)
     run(db, 'UPDATE calls SET twilio_sid = ?, status = ? WHERE id = ?', tw.sid, tw.status || 'queued', id)
     event(db, id, 'server', 'dialed', { twilio_sid: tw.sid, el_conversation_id: reg.conversationId })
   } catch (e) {
@@ -178,9 +184,13 @@ export async function watchdog(d: Deps): Promise<string[]> {
 }
 
 export function statusCallbackUrl(c: Config, id: string): string {
+  return webhookUrl(c, 'status', id)
+}
+
+export function webhookUrl(c: Config, kind: 'status' | 'amd', id: string): string {
   const q = new URLSearchParams({ call: id })
   if (!c.TWILIO_AUTH_TOKEN && c.WEBHOOK_TOKEN) q.set('t', c.WEBHOOK_TOKEN)
-  return `${c.PUBLIC_BASE_URL}/twilio/status?${q}`
+  return `${c.PUBLIC_BASE_URL}/twilio/${kind}?${q}`
 }
 
 /** Applies a Twilio status callback. Returns false if the call is unknown or the CallSid doesn't match. */
@@ -219,7 +229,7 @@ export function callEvents(db: DB, id: string) {
   return all<{ at: string; source: string; type: string }>(db, 'SELECT at, source, type FROM call_events WHERE call_id = ? ORDER BY id', id)
 }
 
-function event(db: DB, callId: string, source: string, type: string, data: object) {
+export function event(db: DB, callId: string, source: string, type: string, data: object) {
   run(db, 'INSERT INTO call_events (call_id, source, type, data) VALUES (?, ?, ?, ?)', callId, source, type, JSON.stringify(data))
 }
 

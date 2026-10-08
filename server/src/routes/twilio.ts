@@ -1,7 +1,8 @@
 // Twilio webhooks: call status callbacks + inbound voice on our owned number.
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Deps } from '../calls.ts'
-import { applyTwilioStatus } from '../calls.ts'
+import { applyTwilioStatus, getCall } from '../calls.ts'
+import { applyAmd, notifyDashboard } from '../postcall.ts'
 import { inboundAllowed } from '../numbers.ts'
 import { safeEqual, twilioSignature } from '../auth.ts'
 import { audit } from '../db.ts'
@@ -32,6 +33,22 @@ export async function twilioRoutes(app: FastifyInstance, d: Deps) {
     if (!verified(req)) return reply.code(403).send('forbidden')
     const id = (req.query as Form).call
     if (!id || !applyTwilioStatus(db, id, req.body as Form)) req.log.warn({ id }, 'status callback for unknown call')
+    else notifyDashboard(d)
+    return reply.code(204).send()
+  })
+
+  // Async answering-machine detection verdict (AnsweredBy: human | machine_start | machine_end_* | fax | unknown).
+  app.post('/twilio/amd', async (req, reply) => {
+    if (!verified(req)) return reply.code(403).send('forbidden')
+    const id = (req.query as Form).call, p = req.body as Form
+    const call = id ? getCall(db, id) : undefined
+    if (!call || (call.twilio_sid && p.CallSid && call.twilio_sid !== p.CallSid)) {
+      req.log.warn({ id }, 'amd callback for unknown call')
+      return reply.code(204).send()
+    }
+    req.log.info({ call: id, answered_by: p.AnsweredBy, ms: p.MachineDetectionDuration }, 'amd')
+    await applyAmd(d, id, p.AnsweredBy || 'unknown')
+    notifyDashboard(d)
     return reply.code(204).send()
   })
 

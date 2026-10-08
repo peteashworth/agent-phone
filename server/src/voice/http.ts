@@ -1,6 +1,6 @@
 // Injectable fetch so tests can stub providers without touching the network.
 export type Fetch = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) =>
-  Promise<{ ok: boolean; status: number; text(): Promise<string> }>
+  Promise<{ ok: boolean; status: number; text(): Promise<string>; arrayBuffer(): Promise<ArrayBuffer> }>
 
 export class ProviderError extends Error {
   provider: string

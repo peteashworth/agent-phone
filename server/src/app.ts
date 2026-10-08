@@ -7,6 +7,7 @@ import { twilioClient } from './voice/twilio.ts'
 import { twilioRoutes } from './routes/twilio.ts'
 import { mcpRoutes } from './mcp.ts'
 import { llmRoutes } from './routes/llm.ts'
+import { apiRoutes } from './routes/api.ts'
 
 export type BuildOpts = { config: Config; db: DB; clients?: Partial<Pick<Deps, 'elevenlabs' | 'twilio' | 'brain' | 'clock'>>; logger?: boolean }
 
@@ -24,6 +25,7 @@ export async function buildApp(o: BuildOpts): Promise<FastifyInstance & { deps: 
     await scope.register(async s => twilioRoutes(s, d))
     await scope.register(async s => mcpRoutes(s, d))
     await scope.register(async s => llmRoutes(s, d))
+    await scope.register(async s => apiRoutes(s, d))
   }, { prefix: o.config.BASE_PATH })
 
   return Object.assign(app, { deps: d }) as unknown as FastifyInstance & { deps: Deps }

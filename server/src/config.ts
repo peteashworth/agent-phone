@@ -2,6 +2,7 @@
 import { z } from 'zod'
 
 const bool = z.enum(['true', 'false', '1', '0']).default('false').transform(v => v === 'true' || v === '1')
+const boolOn = z.enum(['true', 'false', '1', '0']).default('true').transform(v => v === 'true' || v === '1')
 const list = z.string().default('').transform(v => v.split(',').map(s => s.trim()).filter(Boolean))
 
 const schema = z.object({
@@ -32,6 +33,25 @@ const schema = z.object({
   PRIVATE_TERMS: list,
   // How long the close line gets to play before the server hangs up on a hard stop.
   HANGUP_DELAY_MS: z.coerce.number().int().min(0).max(15000).default(4500),
+
+  // ---- Milestone C: answering machines, post-call log, recordings
+  // Twilio async answering-machine detection on every live call. The brain's first reply waits for the verdict.
+  AMD_ENABLED: boolOn,
+  // Twilio MachineDetectionTimeout. No verdict by then (+1.5s) counts as a machine: we'd rather drop a person than
+  // tell a voicemail why we called.
+  AMD_TIMEOUT_S: z.coerce.number().int().min(3).max(30).default(6),
+  // On a machine: hang up right away, or say VOICEMAIL_LINE (fixed; never the purpose) and then hang up.
+  VOICEMAIL_ACTION: z.enum(['hangup', 'message']).default('hangup'),
+  VOICEMAIL_LINE: z.string().max(200).default('Sorry I missed you. Goodbye.'),
+  // Call audio is copied from ElevenLabs to DATA_DIR/recordings and deleted after this many days.
+  SAVE_RECORDINGS: boolOn,
+  RECORDING_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
+  // ElevenLabs credits -> USD (Starter: 185 credits = $0.037 on the Oct 8 call). Twilio AMD is $0.0075 per call.
+  ELEVENLABS_USD_PER_CREDIT: z.coerce.number().min(0).default(0.0002),
+  AMD_FEE_USD: z.coerce.number().min(0).default(0.0075),
+  // Dashboard ping when a call changes (POST, bearer token), e.g. https://jasmine-api.ashworthhub.com/notify/calls
+  DASHBOARD_NOTIFY_URL: z.url().optional(),
+  DASHBOARD_NOTIFY_TOKEN: z.string().optional(),
 
   // ---- custom-LLM path (ElevenLabs -> {BASE_PATH}/llm/v1 -> brain)
   CUSTOM_LLM_SECRET: z.string().min(24).optional(),

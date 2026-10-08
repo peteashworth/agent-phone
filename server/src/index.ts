@@ -3,6 +3,7 @@ import { loadConfig } from './config.ts'
 import { openDb, migrate } from './db.ts'
 import { buildApp } from './app.ts'
 import { watchdog } from './calls.ts'
+import { postCallSweep, notifyDashboard } from './postcall.ts'
 
 const config = loadConfig()
 const db = openDb(join(config.DATA_DIR, 'phone.db'))
@@ -15,6 +16,8 @@ await app.listen({ host: config.HOST, port: config.PORT })
 
 const dog = setInterval(() => {
   watchdog(app.deps).then(ids => { if (ids.length) app.log.warn({ ids }, 'watchdog acted') }, e => app.log.error(e, 'watchdog'))
+    .then(() => postCallSweep(app.deps))
+    .then(ids => { if (ids?.length) { app.log.info({ ids }, 'post-call updated'); notifyDashboard(app.deps) } }, e => app.log.error(e, 'post-call sweep'))
 }, 30_000)
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) process.once(sig, async () => {

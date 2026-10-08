@@ -10,6 +10,7 @@ import { setDoNotCall } from '../contacts.ts'
 import { detectHardStop, CLOSE_LINES } from '../voice/hardStops.ts'
 import { OutputFilter } from '../voice/outputFilter.ts'
 import { type ChatMessage, makeBrain, textOf } from '../voice/brain.ts'
+import { awaitHuman, isMachine } from '../postcall.ts'
 
 type Body = { model?: string; messages?: ChatMessage[]; stream?: boolean }
 
@@ -72,7 +73,19 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         }
       }
     } else {
-      source = brain.reply(messages)
+      // Answering machines: nothing from the brief is said until Twilio AMD says "human" (or the wait runs out).
+      const now = call ? await awaitHuman(d, call) : undefined
+      if (now && isMachine(now.answered_by)) {
+        req.log.info({ call: now.id, answered_by: now.answered_by }, 'voicemail')
+        if (c.VOICEMAIL_ACTION === 'message') {
+          source = (async function* () { yield c.VOICEMAIL_LINE })()
+          void hangup(d, now.id, 'voicemail', c.HANGUP_DELAY_MS)
+        } else {
+          source = (async function* () {})() // already hanging up; say nothing
+        }
+      } else {
+        source = brain.reply(messages)
+      }
     }
 
     const filter = new OutputFilter(c.PRIVATE_TERMS)

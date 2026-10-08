@@ -1,7 +1,7 @@
 import { loadConfig, type Config } from '../src/config.ts'
 import { openDb, migrate, type DB } from '../src/db.ts'
 import { seed } from '../src/cli.ts'
-import type { ElevenLabsClient } from '../src/voice/elevenlabs.ts'
+import type { ElevenLabsClient, Conversation } from '../src/voice/elevenlabs.ts'
 import type { TwilioClient, Dial } from '../src/voice/twilio.ts'
 
 // 2pm Eastern / 11am Pacific / noon Mountain: inside the default calling window everywhere in the continental US.
@@ -15,12 +15,16 @@ export function setup(env: Record<string, string> = {}) {
   const dials: Dial[] = []
   const ended: string[] = []
   const registered: unknown[] = []
-  const twilioState: Record<string, { status: string; duration: number | null }> = {}
+  const twilioState: Record<string, { status: string; duration: number | null; price?: number | null }> = {}
+  const conversations: Record<string, Conversation> = {}
+  const audio: Record<string, Uint8Array> = {}
   const elevenlabs: ElevenLabsClient = {
     async registerCall(r) {
       registered.push(r)
       return { twiml: '<Response><Connect><Stream url="wss://x"><Parameter name="conversation_id" value="conv_test1"/></Stream></Connect></Response>', conversationId: 'conv_test1' }
     },
+    async getConversation(id) { return conversations[id] ?? { status: 'processing' } },
+    async getAudio(id) { if (!audio[id]) throw new Error('no audio'); return audio[id] },
   }
   const twilio: TwilioClient = {
     async createCall(d) { dials.push(d); return { sid: 'CAtest' + dials.length, status: 'queued' } },
@@ -29,7 +33,7 @@ export function setup(env: Record<string, string> = {}) {
   }
   const now = { t: NOON }
   const clock = () => now.t
-  return { config, db, elevenlabs, twilio, dials, ended, registered, twilioState, clock, now }
+  return { config, db, elevenlabs, twilio, dials, ended, registered, twilioState, conversations, audio, clock, now }
 }
 
 export const LIVE_ENV = {

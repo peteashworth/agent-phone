@@ -14,7 +14,7 @@ let app: FastifyInstance | undefined
 afterEach(async () => { await app?.close(); app = undefined })
 
 async function start(env: Record<string, string> = {}) {
-  const d = setup({ ...LIVE_ENV, CUSTOM_LLM_SECRET: SECRET, PRIVATE_TERMS: 'Bluebird', ...env })
+  const d = setup({ ...LIVE_ENV, CUSTOM_LLM_SECRET: SECRET, PRIVATE_TERMS: 'Bluebird', AMD_ENABLED: 'false', ...env })
   app = await buildApp({ config: d.config, db: d.db, clients: d })
   const call = await placeCall(d, 'jasmine', { to: '+14358403707', purpose: 'test', brief: 'say hi', dry_run: false })
   return { d, call }
