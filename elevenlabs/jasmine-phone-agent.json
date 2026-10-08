@@ -27,6 +27,6 @@
     "conversation": { "max_duration_seconds": 300 }
   },
   "platform_settings": {
-    "privacy": { "record_voice": true }
+    "privacy": { "record_voice": true, "retention_days": 30 }
   }
 }
