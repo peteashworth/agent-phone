@@ -7,7 +7,7 @@ const SECRET = process.env.CUSTOM_LLM_SECRET, MODEL = process.env.MODEL || 'clau
 const KEY = process.env.ANTHROPIC_API_KEY, CANNED = !KEY
 if (!SECRET) { console.error('set CUSTOM_LLM_SECRET'); process.exit(1) }
 const SCRIPT = [
-  "Thanks. This is a quick test of Jasmine's custom phone line. Can you hear me clearly?",
+  "I'm calling to run a quick test of Pete's phone line. Can you hear me clearly?",
   "Great. One more check: does my voice sound the same as last time?",
   "Perfect, that's everything I needed. I'll let Pete know the test worked. Goodbye!",
 ]
