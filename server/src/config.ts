@@ -1,5 +1,6 @@
 // Env schema. Fails fast on boot; secrets only ever come from the environment (/etc/agent-phone.env on the droplet).
 import { z } from 'zod'
+import { phraseWords } from './voice/codePhrase.ts'
 
 const bool = z.enum(['true', 'false', '1', '0']).default('false').transform(v => v === 'true' || v === '1')
 const boolOn = z.enum(['true', 'false', '1', '0']).default('true').transform(v => v === 'true' || v === '1')
@@ -55,11 +56,32 @@ const schema = z.object({
 
   // ---- custom-LLM path (ElevenLabs -> {BASE_PATH}/llm/v1 -> brain)
   CUSTOM_LLM_SECRET: z.string().min(24).optional(),
-  // canned = scripted test lines (no model). openai = any OpenAI-compatible chat/completions endpoint (Milestone D).
-  BRAIN: z.enum(['canned', 'openai']).default('canned'),
+  // Default brain for calls that don't pick one (place_call can choose per call).
+  // canned = scripted test lines (no model). openai = any OpenAI-compatible chat/completions endpoint.
+  // jasmine = the phone session behind Pete's host adapter (Milestone D), via the /brain long-poll job queue.
+  BRAIN: z.enum(['canned', 'openai', 'jasmine']).default('canned'),
   BRAIN_URL: z.url().optional(),
   BRAIN_API_KEY: z.string().optional(),
   BRAIN_MODEL: z.string().optional(),
+
+  // ---- Milestone D: BRAIN=jasmine (docs/milestone-d-brain.md)
+  // call.start must be answered {ready:true} within this, or the call fails as brain_not_ready and is never dialed.
+  WARM_TIMEOUT_S: z.coerce.number().int().min(5).max(300).default(90),
+  // Fixed filler lines while a turn is pending, and the per-turn limit before the exit line + hangup.
+  FILLER_AFTER_MS: z.coerce.number().int().min(0).max(20000).default(1500),
+  FILLER2_AFTER_MS: z.coerce.number().int().min(0).max(30000).default(9000),
+  TURN_TIMEOUT_S: z.coerce.number().int().min(3).max(60).default(20),
+  // No poll from the host for this long = brain offline (place_call refuses, live turns take the exit line).
+  BRAIN_OFFLINE_S: z.coerce.number().int().min(5).max(300).default(30),
+  // Secret, entered by Pete in /etc/agent-phone.env. Unset = the personal tier can never unlock.
+  CODE_PHRASE: z.string().optional(),
+  CODE_PHRASE_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  // Only these callees can unlock the personal tier with the code phrase.
+  PERSONAL_OK_NUMBERS: list.default(['+14358403707']),
+  // Never spoken in any tier (on top of a built-in list), comma-separated whole words/phrases, case-insensitive.
+  INTIMATE_TERMS: list,
+  // Phone facts with share rules (anyone | code | never), JSON. On the droplet only (0600), never in the repo.
+  FACTS_FILE: z.string().optional(),
 
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_API_KEY_SID: z.string().optional(),
@@ -92,5 +114,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
   if (c.CALL_HOURS_END <= c.CALL_HOURS_START) throw new Error('CALL_HOURS_END must be after CALL_HOURS_START')
   if (c.BRAIN === 'openai' && (!c.BRAIN_URL || !c.BRAIN_MODEL)) throw new Error('BRAIN=openai needs BRAIN_URL and BRAIN_MODEL')
+  // The message never echoes the phrase.
+  if (c.CODE_PHRASE != null && phraseWords(c.CODE_PHRASE).length < 3) throw new Error('CODE_PHRASE must be at least 3 words (4+ uncommon words recommended)')
+  if (c.FILLER2_AFTER_MS && c.FILLER2_AFTER_MS <= c.FILLER_AFTER_MS) throw new Error('FILLER2_AFTER_MS must be after FILLER_AFTER_MS')
   return c
 }

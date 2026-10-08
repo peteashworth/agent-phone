@@ -4,6 +4,7 @@ import { loadConfig } from './config.ts'
 import { type DB, openDb, migrate, one, run, all, audit, tx } from './db.ts'
 import { createKey, revokeKey, type Scope } from './auth.ts'
 import { updateContact } from './contacts.ts'
+import { brainStatus } from './brainJobs.ts'
 
 /** Idempotent baseline: Pete's caller IDs, the caller-ID rule, Pete as trusted contact, agent 'jasmine'. */
 export function seed(db: DB) {
@@ -26,7 +27,8 @@ const USAGE = `usage: node src/cli.ts <command>
   migrate                         apply pending migrations
   seed                            migrate + insert baseline numbers/rules/contacts/agent (idempotent)
   agent:add <id> <name>
-  key:create <agent_id> [--scope agent|read]   prints the key ONCE
+  key:create <agent_id> [--scope agent|read|brain]   prints the key ONCE (brain = Pete's host adapter)
+  brain:status                    is the host adapter polling? jobs waiting?
   key:list
   key:revoke <prefix>
   contact:set <phone> <field> <0|1>             field: trusted | do_not_call | inbound_allowed
@@ -50,12 +52,13 @@ async function main(argv: string[]) {
     }
     case 'key:create': {
       const i = args.indexOf('--scope'), scope = (i > -1 ? args[i + 1] : 'agent') as Scope
-      if (!args[0] || !['agent', 'read'].includes(scope)) throw new Error(USAGE)
+      if (!args[0] || !['agent', 'read', 'brain'].includes(scope)) throw new Error(USAGE)
       if (!one(db, 'SELECT 1 FROM agents WHERE id = ?', args[0])) throw new Error(`no agent ${args[0]}`)
       const { key } = createKey(db, args[0], scope)
       console.log(`${scope} key for ${args[0]} (shown once, store it now):\n${key}`); break
     }
     case 'key:list': console.table(all(db, 'SELECT prefix, agent_id, scope, created_at, revoked_at FROM agent_keys ORDER BY id')); break
+    case 'brain:status': console.log(brainStatus(config, db)); break
     case 'key:revoke': console.log(revokeKey(db, args[0] ?? '') ? 'revoked' : 'no active key with that prefix'); break
     case 'contact:set': {
       const [phone, field, v] = args

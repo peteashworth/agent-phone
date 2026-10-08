@@ -1,12 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual, createHmac } from 'node:crypto'
 import { type DB, one, run, audit } from './db.ts'
 
-export type Scope = 'agent' | 'read'
+export type Scope = 'agent' | 'read' | 'brain'
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
 /** Creates a bearer key. The plaintext is returned once and never stored. */
 export function createKey(db: DB, agentId: string, scope: Scope): { key: string; prefix: string } {
-  const key = `aph_${scope === 'read' ? 'r' : 'a'}_${randomBytes(24).toString('base64url')}`
+  const key = `aph_${scope[0]}_${randomBytes(24).toString('base64url')}`
   const prefix = key.slice(0, 12)
   run(db, 'INSERT INTO agent_keys (agent_id, scope, hash, prefix) VALUES (?, ?, ?, ?)', agentId, scope, sha256(key), prefix)
   audit(db, 'cli', 'key.create', agentId, { scope, prefix })
