@@ -45,3 +45,12 @@ export function updateContact(db: DB, actor: string, phone: string, patch: Conta
   }
   return getContact(db, e164)!
 }
+
+/** Opt-out: works for numbers that aren't contacts yet. Only the CLI can undo it. */
+export function setDoNotCall(db: DB, actor: string, phone: string, reason: string): void {
+  const e164 = normalizeOrThrow(phone)
+  run(db, `INSERT INTO contacts (e164, name, do_not_call, notes) VALUES (?, ?, 1, ?)
+           ON CONFLICT(e164) DO UPDATE SET do_not_call = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+    e164, 'Unknown (opted out)', `Opted out: ${reason}`)
+  audit(db, actor, 'contact.do_not_call', e164, { reason })
+}

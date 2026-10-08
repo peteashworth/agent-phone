@@ -70,7 +70,7 @@ describe('mcp', () => {
       requestInit: { headers: { authorization: `Bearer ${key}` } },
     }))
     const tools = (await client.listTools()).tools.map(t => t.name).sort()
-    expect(tools).toEqual(['add_contact', 'get_call', 'list_calls', 'list_numbers', 'place_call', 'update_contact'])
+    expect(tools).toEqual(['add_contact', 'confirm_call', 'get_call', 'list_calls', 'list_numbers', 'place_call', 'update_contact'])
 
     const text = (r: unknown) => (r as { content: { text: string }[] }).content[0].text
     const placed = JSON.parse(text(await client.callTool({ name: 'place_call', arguments: { to: '435-840-3707', purpose: 'test', brief: 'say hello', dry_run: false } })))

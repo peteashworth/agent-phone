@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { loadConfig } from './config.ts'
 import { openDb, migrate } from './db.ts'
 import { buildApp } from './app.ts'
+import { watchdog } from './calls.ts'
 
 const config = loadConfig()
 const db = openDb(join(config.DATA_DIR, 'phone.db'))
@@ -12,6 +13,10 @@ app.log.info({ dialing: config.DIALING_ENABLED, allowed: config.ALLOWED_DESTINAT
 
 await app.listen({ host: config.HOST, port: config.PORT })
 
+const dog = setInterval(() => {
+  watchdog(app.deps).then(ids => { if (ids.length) app.log.warn({ ids }, 'watchdog acted') }, e => app.log.error(e, 'watchdog'))
+}, 30_000)
+
 for (const sig of ['SIGINT', 'SIGTERM'] as const) process.once(sig, async () => {
-  await app.close(); db.close(); process.exit(0)
+  clearInterval(dog); await app.close(); db.close(); process.exit(0)
 })

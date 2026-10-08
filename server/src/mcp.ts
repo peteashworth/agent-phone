@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js'
 import { z } from 'zod'
-import { type Deps, type CallRow, CallRefused, placeCall, getCall, listCalls, callEvents } from './calls.ts'
+import { type Deps, type CallRow, CallRefused, placeCall, confirmCall, getCall, listCalls, callEvents } from './calls.ts'
 import { listNumbers } from './numbers.ts'
 import { addContact, updateContact, getContact } from './contacts.ts'
 import { authenticate } from './auth.ts'
@@ -16,6 +16,7 @@ function view(c: CallRow) {
   return {
     id: c.id, status: c.status, dry_run: !!c.dry_run, to: c.to_e164, contact: null as string | null,
     from: c.from_e164, from_label: c.from_label, purpose: c.purpose, created_at: c.created_at,
+    confirm_expires_at: c.status === 'awaiting_confirmation' ? c.confirm_expires_at : undefined,
     started_at: c.started_at, ended_at: c.ended_at, duration_s: c.duration_s, end_reason: c.end_reason, error: c.error,
   }
 }
@@ -33,6 +34,9 @@ export function buildMcpServer(d: Deps, agentId: string): McpServer {
     title: 'Place a phone call',
     description: 'Have Jasmine phone someone on Pete\'s behalf. The caller ID is chosen by the server. ' +
       'DRY RUN unless dry_run is explicitly false AND dialing is enabled on the server. ' +
+      'Trusted contacts are dialed right away. Anyone else: nothing dials yet; you get status awaiting_confirmation and a ' +
+      'one-time confirm_token. Read the call details back to Pete, and only after he says yes call confirm_call with the token ' +
+      '(it expires). All checks (calling hours, spend caps, do-not-call, one call at a time) run again at confirmation. ' +
       'Returns the call id immediately; poll get_call for the outcome.',
     inputSchema: {
       to: z.string().describe('Destination phone number (E.164 preferred; US numbers may omit +1)'),
@@ -42,7 +46,17 @@ export function buildMcpServer(d: Deps, agentId: string): McpServer {
       dry_run: z.boolean().optional().describe('Default true. Set false to actually dial.'),
     },
     annotations: { destructiveHint: true, openWorldHint: true, idempotentHint: false },
-  }, guard(async a => withContact(await placeCall(d, agentId, a))))
+  }, guard(async a => {
+    const { confirm_token, ...c } = await placeCall(d, agentId, a)
+    return { ...withContact(c), ...(confirm_token ? { confirm_token } : {}) }
+  }))
+
+  s.registerTool('confirm_call', {
+    title: 'Confirm a pending call',
+    description: 'Dial a call that place_call left awaiting_confirmation. Only after Pete has explicitly approved this call.',
+    inputSchema: { confirm_token: z.string().startsWith('cfm_') },
+    annotations: { destructiveHint: true, openWorldHint: true, idempotentHint: false },
+  }, guard(async ({ confirm_token }) => withContact(await confirmCall(d, agentId, confirm_token))))
 
   s.registerTool('get_call', {
     title: 'Get a call',

@@ -18,6 +18,29 @@ const schema = z.object({
   ALLOWED_DESTINATIONS: list.default(['+14358403707']),
   MAX_CALL_SECONDS: z.coerce.number().int().min(30).max(600).default(300),
 
+  // ---- Milestone B safety layer
+  // Local calling window at the destination, hours [start, end). Contacts without a tz must fit every continental US zone.
+  CALL_HOURS_START: z.coerce.number().int().min(0).max(23).default(9),
+  CALL_HOURS_END: z.coerce.number().int().min(1).max(24).default(20),
+  // Spend caps. A live call reserves its worst case (MAX_CALL_SECONDS); ended calls count actual/estimated cost.
+  SPEND_CAP_DAY_USD: z.coerce.number().min(0).default(5),
+  SPEND_CAP_MONTH_USD: z.coerce.number().min(0).default(30),
+  COST_PER_MIN_USD: z.coerce.number().min(0).default(0.08), // ElevenLabs ~$0.04-0.06 + Twilio $0.014, rounded up
+  BILLING_TZ: z.string().default('America/Denver'),
+  CONFIRM_TTL_MIN: z.coerce.number().int().min(1).max(120).default(15),
+  // Never spoken on a call (output filter), comma-separated, case-insensitive. E.g. Pete's email and street address.
+  PRIVATE_TERMS: list,
+  // How long the close line gets to play before the server hangs up on a hard stop.
+  HANGUP_DELAY_MS: z.coerce.number().int().min(0).max(15000).default(4500),
+
+  // ---- custom-LLM path (ElevenLabs -> {BASE_PATH}/llm/v1 -> brain)
+  CUSTOM_LLM_SECRET: z.string().min(24).optional(),
+  // canned = scripted test lines (no model). openai = any OpenAI-compatible chat/completions endpoint (Milestone D).
+  BRAIN: z.enum(['canned', 'openai']).default('canned'),
+  BRAIN_URL: z.url().optional(),
+  BRAIN_API_KEY: z.string().optional(),
+  BRAIN_MODEL: z.string().optional(),
+
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_API_KEY_SID: z.string().optional(),
   TWILIO_API_KEY_SECRET: z.string().optional(),
@@ -47,5 +70,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     if (!c.TWILIO_AUTH_TOKEN && !c.WEBHOOK_TOKEN) missing.push('TWILIO_AUTH_TOKEN or WEBHOOK_TOKEN' as never)
     if (missing.length) throw new Error(`DIALING_ENABLED=true but missing: ${missing.join(', ')}`)
   }
+  if (c.CALL_HOURS_END <= c.CALL_HOURS_START) throw new Error('CALL_HOURS_END must be after CALL_HOURS_START')
+  if (c.BRAIN === 'openai' && (!c.BRAIN_URL || !c.BRAIN_MODEL)) throw new Error('BRAIN=openai needs BRAIN_URL and BRAIN_MODEL')
   return c
 }

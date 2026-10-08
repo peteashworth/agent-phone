@@ -6,14 +6,16 @@ import { elevenLabsClient } from './voice/elevenlabs.ts'
 import { twilioClient } from './voice/twilio.ts'
 import { twilioRoutes } from './routes/twilio.ts'
 import { mcpRoutes } from './mcp.ts'
+import { llmRoutes } from './routes/llm.ts'
 
-export type BuildOpts = { config: Config; db: DB; clients?: Partial<Pick<Deps, 'elevenlabs' | 'twilio'>>; logger?: boolean }
+export type BuildOpts = { config: Config; db: DB; clients?: Partial<Pick<Deps, 'elevenlabs' | 'twilio' | 'brain' | 'clock'>>; logger?: boolean }
 
-export async function buildApp(o: BuildOpts): Promise<FastifyInstance> {
+export async function buildApp(o: BuildOpts): Promise<FastifyInstance & { deps: Deps }> {
   const d: Deps = {
     config: o.config, db: o.db,
     elevenlabs: o.clients?.elevenlabs ?? elevenLabsClient(o.config),
     twilio: o.clients?.twilio ?? twilioClient(o.config),
+    brain: o.clients?.brain, clock: o.clients?.clock,
   }
   const app = Fastify({ logger: o.logger ?? false, trustProxy: '127.0.0.1', bodyLimit: 256 * 1024 })
 
@@ -21,7 +23,8 @@ export async function buildApp(o: BuildOpts): Promise<FastifyInstance> {
     scope.get('/health', async () => ({ ok: true, dialing: o.config.DIALING_ENABLED, time: new Date().toISOString() }))
     await scope.register(async s => twilioRoutes(s, d))
     await scope.register(async s => mcpRoutes(s, d))
+    await scope.register(async s => llmRoutes(s, d))
   }, { prefix: o.config.BASE_PATH })
 
-  return app
+  return Object.assign(app, { deps: d }) as unknown as FastifyInstance & { deps: Deps }
 }
