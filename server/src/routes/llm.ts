@@ -82,7 +82,7 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         }
       }
     } else {
-      // Answering machines: nothing from the brief is said until Twilio AMD says "human" (or the wait runs out).
+      // Answering machines: nothing from the brief is said until Twilio AMD has a verdict (or the wait runs out). Only machine_*/fax is a machine.
       const now = call ? await awaitHuman(d, call) : undefined
       if (now && isMachine(now.answered_by)) {
         log = new TurnLog(d, now, kind, 'voicemail')

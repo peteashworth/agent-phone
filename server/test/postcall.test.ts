@@ -65,14 +65,20 @@ describe('answering-machine detection', () => {
     expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'machine_start', end_reason: 'voicemail' })
     expect(said(await llm(call.id, "Hi, you've reached Pete, leave a message"))).toBe('')
   })
-  it('fax and unknown count as machines', async () => {
-    for (const v of ['fax', 'unknown']) {
-      const { d, call } = await start()
-      answer(d, call.id)
-      await amd(call.id, v)
-      expect(getCall(d.db, call.id)!.end_reason).toBe('voicemail')
-      await app!.close()
-    }
+  it('fax counts as a machine', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    await amd(call.id, 'fax')
+    expect(getCall(d.db, call.id)!.end_reason).toBe('voicemail')
+    expect(d.ended).toEqual(['CAtest1'])
+  })
+  it('unknown carries on as a person (call_MDwakWeN1u8z: Pete listened silently to the disclosure)', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    await amd(call.id, 'unknown')
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'unknown', end_reason: null, hangup_requested_at: null })
+    expect(said(await llm(call.id))).toBe(CANNED_LINES[0])
+    expect(d.ended).toEqual([])
   })
   it('VOICEMAIL_ACTION=message: the one fixed line, then hang up', async () => {
     const { d, call } = await start({ VOICEMAIL_ACTION: 'message' })
@@ -90,13 +96,13 @@ describe('answering-machine detection', () => {
     setTimeout(() => void amd(call.id, 'human'), 300)
     expect(said(await pending)).toBe(CANNED_LINES[0])
   })
-  it('no verdict in time counts as a machine', async () => {
+  it('no verdict in time carries on as a person', async () => {
     const { d, call } = await start()
     answer(d, call.id)
     run(d.db, 'UPDATE calls SET started_at = ? WHERE id = ?', new Date(Date.now() - 10_000).toISOString(), call.id)
-    expect(said(await llm(call.id))).toBe('')
-    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'timeout', end_reason: 'voicemail' })
-    expect(d.ended).toEqual(['CAtest1'])
+    expect(said(await llm(call.id))).toBe(CANNED_LINES[0])
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'timeout', end_reason: null })
+    expect(d.ended).toEqual([])
   })
   it('hard stops still win before the AMD wait', async () => {
     const { d, call } = await start()
@@ -110,6 +116,27 @@ describe('answering-machine detection', () => {
     run(d.db, "UPDATE calls SET answered_by = 'timeout' WHERE id = ?", call.id)
     await amd(call.id, 'human')
     expect(getCall(d.db, call.id)!.answered_by).toBe('timeout')
+  })
+  it('a late machine verdict after unknown or our timeout never ends the call', async () => {
+    for (const first of ['unknown', 'timeout']) {
+      const { d, call } = await start()
+      answer(d, call.id)
+      run(d.db, 'UPDATE calls SET answered_by = ? WHERE id = ?', first, call.id)
+      await amd(call.id, 'machine_end_beep')
+      expect(getCall(d.db, call.id)).toMatchObject({ answered_by: first, end_reason: null, hangup_requested_at: null })
+      expect(d.ended).toEqual([])
+      await app!.close()
+    }
+  })
+  it('a machine verdict after the brain has spoken never ends the call', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    run(d.db, 'UPDATE calls SET amd = 0 WHERE id = ?', call.id) // let the brain talk before any verdict
+    expect(said(await llm(call.id))).toBe(CANNED_LINES[0])
+    run(d.db, 'UPDATE calls SET amd = 1 WHERE id = ?', call.id)
+    await amd(call.id, 'machine_start')
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'machine_start', end_reason: null, hangup_requested_at: null })
+    expect(d.ended).toEqual([])
   })
 })
 

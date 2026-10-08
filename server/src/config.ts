@@ -38,8 +38,8 @@ const schema = z.object({
   // ---- Milestone C: answering machines, post-call log, recordings
   // Twilio async answering-machine detection on every live call. The brain's first reply waits for the verdict.
   AMD_ENABLED: boolOn,
-  // Twilio MachineDetectionTimeout. No verdict by then (+1.5s) counts as a machine: we'd rather drop a person than
-  // tell a voicemail why we called.
+  // Twilio MachineDetectionTimeout. Only machine_*/fax ends the call; 'unknown' or no verdict by then (+1.5s) carries
+  // on as human (dropping a real person is worse than a voicemail hearing the disclosure).
   AMD_TIMEOUT_S: z.coerce.number().int().min(3).max(30).default(6),
   // On a machine: hang up right away, or say VOICEMAIL_LINE (fixed; never the purpose) and then hang up.
   VOICEMAIL_ACTION: z.enum(['hangup', 'message']).default('hangup'),

@@ -10,16 +10,28 @@ import { sha256 } from './voice/brainTurn.ts'
 
 // ---------------------------------------------------------------- answering machines
 
-/** Twilio AnsweredBy values (plus our own 'timeout') that mean "not a person". Unsure counts as a machine. */
-export const isMachine = (answeredBy: string | null) => !!answeredBy && answeredBy !== 'human'
+/**
+ * Only a definite Twilio verdict (machine_start, machine_end_*, fax) means "not a person". 'unknown' and our own
+ * 'timeout' carry on as human: the disclosure plays at answer, so a real person often just listens in silence and
+ * Twilio returns 'unknown' after its 5s silence timeout (call_MDwakWeN1u8z, Oct 8). Dropping a person is worse.
+ */
+export const isMachine = (answeredBy: string | null) => !!answeredBy && (answeredBy.startsWith('machine') || answeredBy === 'fax')
+
+/** True once a brain turn has said something on this call: from then on it's a conversation, whatever AMD says. */
+const brainHasSpoken = (d: Deps, id: string) =>
+  !!one(d.db, "SELECT 1 AS x FROM call_turns WHERE call_id = ? AND kind = 'brain' AND said IS NOT NULL LIMIT 1", id)
 
 /** Twilio's async AMD verdict. A machine ends the call (VOICEMAIL_ACTION=hangup) or gets the one fixed line first. */
 export async function applyAmd(d: Deps, id: string, answeredBy: string, source: 'twilio' | 'server' = 'twilio'): Promise<void> {
   const call = getCall(d.db, id)
-  if (!call || call.answered_by) return // first verdict wins (a late Twilio verdict after our timeout is history only)
+  if (!call) return
+  // First verdict wins; a later one (e.g. Twilio's after our timeout) is history only and never ends the call.
+  if (call.answered_by) { event(d.db, id, source, 'amd_late', { answered_by: answeredBy, kept: call.answered_by }); return }
   run(d.db, 'UPDATE calls SET answered_by = ?, amd_at = ? WHERE id = ?', answeredBy, now(), id)
   event(d.db, id, source, 'amd', { answered_by: answeredBy })
   if (!isMachine(answeredBy) || !(LIVE_STATUSES as readonly string[]).includes(call.status)) return
+  // Belt and braces: the brain only speaks after a verdict, but if it ever got there first, the person stays on.
+  if (brainHasSpoken(d, id)) { event(d.db, id, source, 'amd_ignored', { answered_by: answeredBy, reason: 'brain_spoke' }); return }
   audit(d.db, 'system', 'call.voicemail', id, { answered_by: answeredBy, action: d.config.VOICEMAIL_ACTION })
   if (d.config.VOICEMAIL_ACTION === 'hangup') return hangup(d, id, 'voicemail', 0)
   // 'message': the next LLM turn speaks VOICEMAIL_LINE and hangs up; this is the backstop if no turn ever comes.
@@ -32,8 +44,8 @@ const VOICEMAIL_BACKSTOP_MS = 20_000
 const amdWaitMs = (d: Deps) => d.config.AMD_TIMEOUT_S * 1000 + 1500
 
 /**
- * Called before the brain speaks. Nothing personal (purpose, brief) is said until AMD says "human"; no verdict in time
- * counts as a machine. Returns the call row as it stands after the wait.
+ * Called before the brain speaks. Nothing from the brief is said until AMD has a verdict; no verdict in time is
+ * recorded as 'timeout' and the call carries on as human. Returns the call row as it stands after the wait.
  */
 export async function awaitHuman(d: Deps, call: CallRow, pollMs = 150): Promise<CallRow> {
   let c = call
