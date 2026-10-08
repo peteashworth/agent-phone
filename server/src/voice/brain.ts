@@ -25,7 +25,8 @@ export const FILTER_TEST_LINE = 'Sure. The address on file is test.private@examp
 export function cannedBrain(): Brain {
   return {
     async *reply(messages) {
-      const users = messages.filter(m => m.role === 'user')
+      // Only replies to us count: with the wait-for-hello opening the callee's greeting comes before the disclosure.
+      const users = messages.slice(messages.findIndex(m => m.role === 'assistant') + 1).filter(m => m.role === 'user')
       const last = textOf(users.at(-1)?.content).toLowerCase()
       const line = /filter test/.test(last) ? FILTER_TEST_LINE : CANNED_LINES[Math.min(Math.max(users.length - 1, 0), CANNED_LINES.length - 1)]
       for (const w of line.split(/(?<= )/)) yield w

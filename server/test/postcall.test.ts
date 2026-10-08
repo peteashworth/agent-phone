@@ -7,7 +7,9 @@ import { buildApp } from '../src/app.ts'
 import { createKey, twilioSignature } from '../src/auth.ts'
 import { placeCall, getCall, applyTwilioStatus } from '../src/calls.ts'
 import { postCallSweep, purgeRecordings } from '../src/postcall.ts'
-import { run } from '../src/db.ts'
+import { run, all } from '../src/db.ts'
+import { DISCLOSURE } from '../src/voice/lines.ts'
+import { classifyGreeting } from '../src/voice/greeting.ts'
 import { CANNED_LINES } from '../src/voice/brain.ts'
 import { setup, LIVE_ENV } from './helpers.ts'
 
@@ -279,4 +281,108 @@ describe('read API', () => {
     await postCallSweep(d)
     expect(getCall(d.db, call.id)!.duration_s).toBe(58)
   })
+})
+
+describe('wait-for-hello opening (blank first_message)', () => {
+  const sys = (id: string) => ({ role: 'system', content: `call_id: ${id}` })
+  const post = (messages: object[]) => app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: { authorization: `Bearer ${SECRET}` },
+    payload: { model: 'x', stream: false, messages } })
+  /** First turn: the callee's greeting, or nothing when ElevenLabs' initial_wait_time ran out in silence. */
+  const opening = (id: string, greeting?: string) => post(greeting == null ? [sys(id)] : [sys(id), { role: 'user', content: greeting }])
+  /** Second turn: the callee's reply to the disclosure. */
+  const reply = (id: string, text: string, greeting = 'Hello?') =>
+    post([sys(id), { role: 'user', content: greeting }, { role: 'assistant', content: DISCLOSURE }, { role: 'user', content: text }])
+
+  it('a person says hello: disclosure first, verdict human_greeting, the brain then answers without waiting', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    expect(said(await opening(call.id, 'Hello?'))).toBe(DISCLOSURE)
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'human_greeting', end_reason: null })
+    const t0 = Date.now()
+    expect(said(await reply(call.id, 'Oh, okay. Hi.'))).toBe(CANNED_LINES[0])
+    expect(Date.now() - t0).toBeLessThan(1000)
+    await amd(call.id, 'machine_start') // Twilio disagreeing later changes nothing
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'human_greeting', end_reason: null })
+    expect(d.ended).toEqual([])
+    expect(all<{ kind: string }>(d.db, 'SELECT kind FROM call_turns WHERE call_id = ? ORDER BY id', call.id).map(r => r.kind))
+      .toEqual(['disclosure', 'brain'])
+  })
+  it('a person stays silent: disclosure after the wait, Twilio unknown carries on, the brain answers', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    expect(said(await opening(call.id))).toBe(DISCLOSURE)
+    expect(getCall(d.db, call.id)!.answered_by).toBeNull()
+    await amd(call.id, 'unknown')
+    expect(said(await reply(call.id, 'Uh, hi?', ''))).toBe(CANNED_LINES[0])
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'unknown', end_reason: null })
+    expect(d.ended).toEqual([])
+  })
+  it('a person stays silent and Twilio never answers: timeout carries on as human', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    expect(said(await opening(call.id))).toBe(DISCLOSURE)
+    run(d.db, 'UPDATE calls SET started_at = ? WHERE id = ?', new Date(Date.now() - 10_000).toISOString(), call.id)
+    expect(said(await reply(call.id, 'Yes?', ''))).toBe(CANNED_LINES[0])
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'timeout', end_reason: null })
+  })
+  it('a machine greeting: no disclosure, no brain, logged as voicemail and hung up', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    expect(said(await opening(call.id, "Hi, you've reached Pete. I can't come to the phone right now, leave a message after the beep."))).toBe('')
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'machine_greeting', end_reason: 'voicemail' })
+    expect(d.ended).toEqual(['CAtest1'])
+  })
+  it('a long unbroken greeting with no voicemail words is still a machine', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    expect(said(await opening(call.id, 'Thank you for calling Ashworth Holdings, our office hours are nine to five Monday through Friday'))).toBe('')
+    expect(getCall(d.db, call.id)!.answered_by).toBe('machine_greeting')
+  })
+  it('a machine greeting still yields to an earlier Twilio human verdict', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    await amd(call.id, 'human')
+    expect(said(await opening(call.id, 'Hello this is Pete Ashworth speaking, who am I talking to today please'))).toBe(DISCLOSURE)
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'human', end_reason: null })
+  })
+  it('voicemail wording after the disclosure, before the brain spoke, overrides human_greeting', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    await opening(call.id, 'Hi,')
+    expect(getCall(d.db, call.id)!.answered_by).toBe('human_greeting')
+    expect(said(await reply(call.id, 'Please leave your message after the tone.', 'Hi,'))).toBe('')
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'machine_greeting', end_reason: 'voicemail' })
+  })
+  it('once the brain has spoken, voicemail-ish words never end the call', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    await opening(call.id, 'Hello?')
+    await reply(call.id, 'Hi.')
+    const r = await post([sys(call.id), { role: 'user', content: 'Hello?' }, { role: 'assistant', content: DISCLOSURE },
+      { role: 'user', content: 'Hi.' }, { role: 'assistant', content: CANNED_LINES[0] }, { role: 'user', content: "Sorry, he's not available right now." }])
+    expect(said(r)).toBe(CANNED_LINES[1])
+    expect(getCall(d.db, call.id)).toMatchObject({ answered_by: 'human_greeting', end_reason: null })
+  })
+  it('hard stops still win on the opening turn', async () => {
+    const { d, call } = await start()
+    answer(d, call.id)
+    expect(said(await opening(call.id, 'Stop calling me.'))).toMatch(/won't call again/)
+    expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:opt_out')
+  })
+  it('AMD off: the greeting is not judged', async () => {
+    const { d, call } = await start({ AMD_ENABLED: 'false' })
+    answer(d, call.id)
+    expect(said(await opening(call.id, "You've reached Pete, leave a message."))).toBe(DISCLOSURE)
+    expect(getCall(d.db, call.id)!.answered_by).toBeNull()
+  })
+})
+
+describe('classifyGreeting', () => {
+  it.each([
+    ['Hello?', true, 'human'], ['Yeah, hi.', true, 'human'], ['Hi, this is Pete.', true, 'human'], ['', true, null],
+    ['Hey, who is this calling please?', true, null],
+    ["The person you're trying to reach is not available.", true, 'machine'], ['Please leave a message.', true, 'machine'],
+    ['Sure, I can talk for a few minutes, what is this about exactly then?', false, null],
+    ['Sorry, your call cannot be answered. Press one to leave a callback number.', false, 'machine'],
+  ] as const)('%s (opening %s) -> %s', (text, opening, want) => expect(classifyGreeting(text, opening)).toBe(want))
 })

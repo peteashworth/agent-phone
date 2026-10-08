@@ -7,6 +7,7 @@ import { all, one, run, audit } from './db.ts'
 import { enqueueJob } from './brainJobs.ts'
 import { findPhrase, removePhrase } from './voice/codePhrase.ts'
 import { sha256 } from './voice/brainTurn.ts'
+import { classifyGreeting } from './voice/greeting.ts'
 
 // ---------------------------------------------------------------- answering machines
 
@@ -18,15 +19,21 @@ import { sha256 } from './voice/brainTurn.ts'
 export const isMachine = (answeredBy: string | null) => !!answeredBy && (answeredBy.startsWith('machine') || answeredBy === 'fax')
 
 /** True once a brain turn has said something on this call: from then on it's a conversation, whatever AMD says. */
-const brainHasSpoken = (d: Deps, id: string) =>
+export const brainHasSpoken = (d: Deps, id: string) =>
   !!one(d.db, "SELECT 1 AS x FROM call_turns WHERE call_id = ? AND kind = 'brain' AND said IS NOT NULL LIMIT 1", id)
 
-/** Twilio's async AMD verdict. A machine ends the call (VOICEMAIL_ACTION=hangup) or gets the one fixed line first. */
-export async function applyAmd(d: Deps, id: string, answeredBy: string, source: 'twilio' | 'server' = 'twilio'): Promise<void> {
+/**
+ * An AMD verdict: Twilio's async one, our 'timeout', or the greeting check (human_greeting / machine_greeting).
+ * A machine ends the call (VOICEMAIL_ACTION=hangup) or gets the one fixed line first.
+ * overrideUnsure: voicemail wording heard before the brain spoke replaces anything short of Twilio's 'human'.
+ */
+export async function applyAmd(d: Deps, id: string, answeredBy: string, source: 'twilio' | 'server' = 'twilio',
+  overrideUnsure = false): Promise<void> {
   const call = getCall(d.db, id)
   if (!call) return
   // First verdict wins; a later one (e.g. Twilio's after our timeout) is history only and never ends the call.
-  if (call.answered_by) { event(d.db, id, source, 'amd_late', { answered_by: answeredBy, kept: call.answered_by }); return }
+  const override = overrideUnsure && call.answered_by !== 'human' && !isMachine(call.answered_by)
+  if (call.answered_by && !override) { event(d.db, id, source, 'amd_late', { answered_by: answeredBy, kept: call.answered_by }); return }
   run(d.db, 'UPDATE calls SET answered_by = ?, amd_at = ? WHERE id = ?', answeredBy, now(), id)
   event(d.db, id, source, 'amd', { answered_by: answeredBy })
   if (!isMachine(answeredBy) || !(LIVE_STATUSES as readonly string[]).includes(call.status)) return
@@ -57,6 +64,20 @@ export async function awaitHuman(d: Deps, call: CallRow, pollMs = 150): Promise<
   }
   if (!c.answered_by) { await applyAmd(d, c.id, 'timeout', 'server'); c = getCall(d.db, c.id) ?? c }
   return c
+}
+
+/**
+ * What the callee said, fed into the verdict until the brain has spoken. Opening turn (before the disclosure): a short
+ * "hello" with no verdict yet is human_greeting, so the brain needn't wait for Twilio; a long greeting or voicemail
+ * wording is machine_greeting. Later turns: voicemail wording only. Returns the call row as it stands after.
+ */
+export async function applyGreeting(d: Deps, call: CallRow, text: string, opening: boolean): Promise<CallRow> {
+  if (!call.amd || call.dry_run || brainHasSpoken(d, call.id)) return call
+  const cls = classifyGreeting(text, opening)
+  if (cls === 'machine') await applyAmd(d, call.id, 'machine_greeting', 'server', true)
+  else if (cls === 'human' && !call.answered_by) await applyAmd(d, call.id, 'human_greeting', 'server')
+  else return call
+  return getCall(d.db, call.id) ?? call
 }
 
 // ---------------------------------------------------------------- post-call record

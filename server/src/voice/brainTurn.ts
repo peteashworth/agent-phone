@@ -16,7 +16,7 @@ export const sha256 = (s: string) => createHash('sha256').update(s).digest('hex'
 // ---------------------------------------------------------------- timing
 
 type Stage = 'queued' | 'picked' | 'reply' | 'filtered' | 'tts' | 'filler1' | 'filler2' | 'done'
-export type TurnKind = 'brain' | 'hard_stop' | 'voicemail' | 'closing'
+export type TurnKind = 'brain' | 'hard_stop' | 'voicemail' | 'closing' | 'disclosure'
 
 /** One row in call_turns per LLM request: ms offsets from the moment ElevenLabs' request arrived. */
 export class TurnLog {

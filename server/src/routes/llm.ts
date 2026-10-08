@@ -12,7 +12,8 @@ import { OutputFilter } from '../voice/outputFilter.ts'
 import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '../voice/brain.ts'
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine } from '../voice/brainTurn.ts'
 import type { FilterOptions } from '../voice/outputFilter.ts'
-import { awaitHuman, isMachine } from '../postcall.ts'
+import { awaitHuman, applyGreeting, isMachine } from '../postcall.ts'
+import { DISCLOSURE } from '../voice/lines.ts'
 
 type Body = { model?: string; messages?: ChatMessage[]; stream?: boolean }
 
@@ -82,8 +83,13 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         }
       }
     } else {
-      // Answering machines: nothing from the brief is said until Twilio AMD has a verdict (or the wait runs out). Only machine_*/fax is a machine.
-      const now = call ? await awaitHuman(d, call) : undefined
+      // Wait-for-hello opening (agent first_message blank): nothing has been said to the callee yet, so this turn is
+      // the disclosure and nothing else. It doesn't wait for AMD: it's fixed text with nothing from the brief in it.
+      const opening = !messages.some(m => m.role === 'assistant' && textOf(m.content).trim())
+      // Answering machines: what the callee said feeds the verdict, then nothing from the brief is said until there is
+      // one (or the wait runs out). Only machine_*/fax is a machine; unknown and timeout carry on as human.
+      let now = call ? await applyGreeting(d, call, lastUser, opening) : undefined
+      if (now && !opening) now = await awaitHuman(d, now)
       if (now && isMachine(now.answered_by)) {
         log = new TurnLog(d, now, kind, 'voicemail')
         req.log.info({ call: now.id, answered_by: now.answered_by }, 'voicemail')
@@ -98,6 +104,9 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         log = new TurnLog(d, now, kind, 'closing')
         const line = closingLine(now)
         source = (async function* () { if (line) yield line })()
+      } else if (opening) {
+        if (now) log = new TurnLog(d, now, kind, 'disclosure')
+        source = (async function* () { yield DISCLOSURE })()
       } else if (now && kind === 'jasmine') {
         log = new TurnLog(d, now, kind, 'brain')
         const p = prepareJasmineTurn(d, now, messages, log)
