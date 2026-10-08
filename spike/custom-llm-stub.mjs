@@ -1,6 +1,6 @@
 // S0-6: minimal OpenAI-compatible SSE endpoint for an ElevenLabs Custom LLM, to time real calls.
 // Logs: request arrival → first token sent, per turn. Proxies to the fast model (Anthropic streaming).
-// usage: CUSTOM_LLM_SECRET=... PORT=3000 node custom-llm-stub.mjs   (needs a public HTTPS URL in front)
+// usage: CUSTOM_LLM_SECRET=... [HOST=127.0.0.1] PORT=3000 node custom-llm-stub.mjs   (needs a public HTTPS URL in front)
 // No ANTHROPIC_API_KEY → canned mode: streams scripted replies, no model. Measures only the ElevenLabs ↔ droplet hop.
 import http from 'node:http'
 const SECRET = process.env.CUSTOM_LLM_SECRET, MODEL = process.env.MODEL || 'claude-sonnet-5-5'
@@ -59,4 +59,4 @@ http.createServer(async (req, res) => {
   send({ id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
   res.end('data: [DONE]\n\n')
   console.log(JSON.stringify({ at: new Date().toISOString(), turns: messages.length, firstTokenMs: Math.round(first ?? -1), totalMs: Math.round(performance.now() - t0) }))
-}).listen(Number(process.env.PORT || 3000), () => console.error(`custom-llm stub listening (${CANNED ? 'canned' : MODEL})`))
+}).listen(Number(process.env.PORT || 3000), process.env.HOST || '127.0.0.1', () => console.error(`custom-llm stub listening on ${process.env.HOST || '127.0.0.1'}:${process.env.PORT || 3000} (${CANNED ? 'canned' : MODEL})`))

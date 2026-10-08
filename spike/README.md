@@ -9,6 +9,13 @@ If `ANTHROPIC_API_KEY` is unset, it streams three scripted replies and uses no m
 CUSTOM_LLM_SECRET=<random string> PORT=3000 node spike/custom-llm-stub.mjs
 ```
 
+`HOST` defaults to `127.0.0.1` (loopback only, so it is reachable just through the reverse proxy). Set `HOST=0.0.0.0` only if the proxy runs on another machine.
+
+```sh
+# droplet: nginx → 127.0.0.1:3500
+CUSTOM_LLM_SECRET=<random string> PORT=3500 node spike/custom-llm-stub.mjs
+```
+
 - Put HTTPS in front so `https://jasmine.ashworthhub.com/phone/v1` reaches port 3000. The reverse proxy may strip `/phone` or keep it; either works.
 - It accepts `POST …/v1` and `POST …/chat/completions` with `Authorization: Bearer <CUSTOM_LLM_SECRET>`. Anything else returns 404.
 - It logs one JSON line per request (method + path), plus timing per turn (`firstTokenMs`, `totalMs`).
