@@ -241,7 +241,7 @@ export function parseAnswer(raw: string | null): Answer {
 
 /** What to say for a turn on a call that's already being hung up (not a hard stop; that's handled before). */
 export function closingLine(call: CallRow): string {
-  return call.end_reason === 'brain_timeout' || call.end_reason === 'brain_offline' ? EXIT_LINE : ''
+  return ['brain_timeout', 'brain_offline', 'brain_error'].includes(call.end_reason ?? '') ? EXIT_LINE : ''
 }
 
 /** True if this call already spoke the line (closing lines are said once; later closing turns stay silent). */

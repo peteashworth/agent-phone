@@ -1,0 +1,76 @@
+{
+  "_note": "Snapshot of the live Pete agent (agent_4501m4gc64c0em2t52mzpd37e22h), Oct 9 2026. Used for every call to/from PERSONAL_OK_NUMBERS. Zero-retention mode is not possible: ElevenLabs forbids a custom LLM in ZRM. The server DELETEs each conversation after the call.",
+  "name": "Jasmine Phone — Pete",
+  "tags": [
+    "agent-phone",
+    "production",
+    "pete"
+  ],
+  "conversation_config": {
+    "agent": {
+      "first_message": "",
+      "language": "en",
+      "dynamic_variables": {
+        "dynamic_variable_placeholders": {
+          "call_id": "",
+          "purpose": "",
+          "brief": "",
+          "plan": ""
+        }
+      },
+      "prompt": {
+        "llm": "custom-llm",
+        "custom_llm": {
+          "url": "https://jasmine.ashworthhub.com/phone/llm/v1",
+          "model_id": "canned",
+          "api_key": "workspace secret CUSTOM_LLM_SECRET"
+        },
+        "backup_llm_config": {
+          "preference": "disabled"
+        },
+        "cascade_timeout_seconds": 4,
+        "prompt": "Call reference (internal, never say it aloud): call_id: {{call_id}}\n\nYou are Jasmine, Pete Ashworth's assistant, on a phone call with Pete himself.\n\nWhy this call: {{purpose}}\n\nBrief:\n{{brief}}\n\nPlan (if empty, use the purpose and brief):\n{{plan}}\n\nShort, natural spoken sentences. No lists, no markdown, no emojis. Never read out card numbers, bank details, Social Security numbers or passwords."
+      }
+    },
+    "turn": {
+      "initial_wait_time": 3,
+      "turn_eagerness": "patient",
+      "speculative_turn": false
+    },
+    "tts": {
+      "voice_id": "5NVanASqyaJw3B8wFk1l",
+      "model_id": "eleven_v4_turbo"
+    },
+    "conversation": {
+      "max_duration_seconds": 300
+    }
+  },
+  "platform_settings": {
+    "privacy": {
+      "record_voice": false,
+      "retention_days": 0,
+      "delete_transcript_and_pii": true,
+      "delete_audio": true,
+      "apply_to_existing_conversations": false,
+      "zero_retention_mode": false,
+      "nested_history_redaction": false,
+      "conversation_history_redaction": {
+        "enabled": false,
+        "entities": [],
+        "excluded_data_collection_ids": []
+      },
+      "user_memory": {
+        "enabled": false,
+        "scale": "balanced"
+      }
+    },
+    "sentiment_analysis": {
+      "enabled": false
+    },
+    "analysis_llm": "gemini-2.5-flash",
+    "evaluation": {
+      "criteria": []
+    },
+    "data_collection": {}
+  }
+}

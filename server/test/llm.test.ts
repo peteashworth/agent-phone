@@ -7,6 +7,7 @@ import { all } from '../src/db.ts'
 import { CLOSE_LINES, closeLine, detectHardStop } from '../src/voice/hardStops.ts'
 import { BLOCKED_LINE } from '../src/voice/outputFilter.ts'
 import { CANNED_LINES } from '../src/voice/brain.ts'
+import { EXIT_LINE } from '../src/voice/lines.ts'
 import { setup, LIVE_ENV } from './helpers.ts'
 
 const SECRET = 'x'.repeat(32)
@@ -106,6 +107,26 @@ describe('custom LLM route', () => {
     app = await buildApp({ config: d.config, db: d.db, clients: { ...d, brain } })
     const r2 = await app.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'x') })
     expect(spoken(r2.body)).toBe(`${BLOCKED_LINE} Bye!`)
+  })
+  it('a brain that fails before saying anything: exit line once, then hang up (no dead air)', async () => {
+    const { d, call } = await start()
+    const brain = { async *reply(): AsyncGenerator<string> { throw new Error('boom') } }
+    await app!.close()
+    app = await buildApp({ config: d.config, db: d.db, clients: { ...d, brain } })
+    const r = await app.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'hello') })
+    expect(spoken(r.body)).toBe(EXIT_LINE)
+    expect(getCall(d.db, call.id)!.end_reason).toBe('brain_error')
+    const again = await app.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'hello?') })
+    expect(spoken(again.body)).toBe('') // said once
+  })
+  it('a brain that fails mid-reply keeps what it said and the call goes on', async () => {
+    const { d, call } = await start()
+    const brain = { async *reply(): AsyncGenerator<string> { yield 'Sure thing. '; throw new Error('boom') } }
+    await app!.close()
+    app = await buildApp({ config: d.config, db: d.db, clients: { ...d, brain } })
+    const r = await app.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'hello') })
+    expect(spoken(r.body)).toBe('Sure thing. ')
+    expect(getCall(d.db, call.id)!.end_reason).toBeNull()
   })
   it('non-streaming requests get a plain completion', async () => {
     const { call } = await start()

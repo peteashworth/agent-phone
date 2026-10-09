@@ -13,7 +13,7 @@ import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '..
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine, alreadySaid, takeContinuation } from '../voice/brainTurn.ts'
 import type { FilterOptions } from '../voice/outputFilter.ts'
 import { awaitHuman, applyGreeting, isMachine } from '../postcall.ts'
-import { openerFor, NOTICE_LINE, noticeHeard, speakMs } from '../voice/lines.ts'
+import { openerFor, NOTICE_LINE, EXIT_LINE, noticeHeard, speakMs } from '../voice/lines.ts'
 import { effective } from '../settings.ts'
 
 type Body = { model?: string; messages?: ChatMessage[]; stream?: boolean }
@@ -202,9 +202,26 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       }
     }
 
+    /**
+     * The brain threw. With ElevenLabs' backup LLM off, nothing else will answer, so never leave dead air: if nothing
+     * was said this turn, say the exit line once and hang up (reason brain_error). Returns the line to send, or ''.
+     */
+    let saidAny = false
+    const brainFailed = (e: unknown): string => {
+      req.log.error(e, 'brain failed')
+      if (log) log.outcome = 'error'
+      if (!call || saidAny) return ''
+      const cur = getCall(db, call.id)
+      if (!cur || cur.hangup_requested_at) return ''
+      event(db, call.id, 'server', 'brain_error', {})
+      void hangup(d, call.id, 'brain_error', speakMs(EXIT_LINE, c.HANGUP_DELAY_MS))
+      log?.spoke(EXIT_LINE)
+      return EXIT_LINE
+    }
+
     if (body.stream === false) {
       let text = ''
-      try { for await (const t of source) { const o = filter.push(t); out(o); text += o } } catch (e) { req.log.error(e, 'brain failed'); if (log) log.outcome = 'error' }
+      try { for await (const t of source) { const o = filter.push(t); out(o); text += o; if (o.trim()) saidAny = true } } catch (e) { text += brainFailed(e) }
       const tail = filter.flush(); out(tail); text += tail; sent()
       finish()
       return { id, object: 'chat.completion', created, model,
@@ -227,11 +244,11 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       for await (const t of source) {
         if (closed) break
         const o = filter.push(t)
-        if (o) { out(o); res.write(chunk({ content: o })); sent() }
+        if (o) { out(o); res.write(chunk({ content: o })); sent(); if (o.trim()) saidAny = true }
       }
     } catch (e) {
-      req.log.error(e, 'brain failed')
-      if (log) log.outcome = 'error'
+      const line = closed ? '' : brainFailed(e)
+      if (line) res.write(chunk({ content: line }))
     }
     const tail = filter.flush()
     if (tail && !closed) { out(tail); res.write(chunk({ content: tail })); sent() }
