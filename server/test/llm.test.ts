@@ -72,7 +72,7 @@ describe('custom LLM route', () => {
     expect(spoken(r.body)).toBe(CLOSE_LINES.recording_objection)
   })
   it('opt-out also puts the number on do-not-call (found via the single live call, no marker)', async () => {
-    const { d, call } = await start()
+    const { d, call } = await start({ PERSONAL_OK_NUMBERS: '+14350000000' })
     const r = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn('no marker here', 'please stop calling me') })
     expect(spoken(r.body)).toBe(CLOSE_LINES.opt_out)
     expect(getContact(d.db, '+14358403707')!.do_not_call).toBe(1)
@@ -90,6 +90,13 @@ describe('custom LLM route', () => {
     expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:opt_out')
     const again = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'wait') })
     expect(spoken(again.body)).toBe('') // said once
+  })
+  it("Pete's number, public tier: opt-out ends the call without DNC (only the CLI could clear it)", async () => {
+    const { d, call } = await start()
+    const r = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'stop calling me') })
+    expect(spoken(r.body)).toBe(closeLine('opt_out', true))
+    expect(getContact(d.db, '+14358403707')?.do_not_call ?? 0).toBe(0)
+    expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:opt_out')
   })
   it('personal tier: a real recording objection still stops', () => {
     expect(detectHardStop("don't record this", { personal: true })).toBe('recording_objection')

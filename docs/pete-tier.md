@@ -31,8 +31,8 @@ Spec: Jasmine-nanoclaw/projects/phone-pete-tier-spec.md. This file records what 
 - Output filter: INTIMATE terms off; card/SSN/secrets still blocked.
 - Hard stops: no ai_objection, no "off the record"; opt-out ends the call without DNC. A real recording objection
   still stops.
-- Note: before the phrase is verified, a private call is still public tier, so a public opt-out ("stop calling me")
-  does put Pete on DNC. Clear it with the CLI: `contact:set +14358403707 do_not_call 0`.
+- Opt-out on Pete's number (any tier, Oct 9): ends the call with "Okay, I'll let you go. Bye." and never sets DNC
+  (audit `dnc_skipped: pete`). Other numbers still go on DNC.
 
 ## Not built yet
 - Check-ins (step 6) and inbound (step 7).

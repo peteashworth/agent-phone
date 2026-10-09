@@ -109,6 +109,8 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       ? call.end_reason.slice('hard_stop:'.length) as keyof typeof CLOSE_LINES : null
     // Pete's personal tier: no ai_objection, no "off the record", and an opt-out ends the call without a DNC.
     const personal = call?.tier === 'personal'
+    // Pete's own number never goes on do-not-call from a call, in any tier: only the CLI could clear it (Oct 9).
+    const pete = !!call && c.PERSONAL_OK_NUMBERS.includes(call.to_e164)
     const stop = prior ?? detectHardStop(lastUser, { afterDisclosure, personal })
     req.log.info({ marker: callMarker(messages), call: call?.id ?? null, turns: messages.length, stop }, 'llm turn')
 
@@ -122,14 +124,15 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       // A first hard stop still says the notice if it wasn't heard; not for a recording objection (they've got it).
       const lead = !prior && noticeDue && stop !== 'recording_objection' && call && log
       if (lead) repeatNotice(call, log!)
-      const close = closeLine(stop, personal)
+      const close = closeLine(stop, personal || pete)
       const line = prior && call && alreadySaid(db, call.id, close) ? '' : (lead ? NOTICE_LINE : '') + close
       source = (async function* () { if (line) yield line })()
       if (!prior) {
         req.log.warn({ call: call?.id, stop }, 'hard stop')
-        audit(db, 'system', 'call.hard_stop', call?.id ?? null, { stop, identified: !!call, ...(personal ? { personal } : {}) })
+        audit(db, 'system', 'call.hard_stop', call?.id ?? null, { stop, identified: !!call, ...(personal ? { personal } : {}),
+          ...(stop === 'opt_out' && pete ? { dnc_skipped: 'pete' } : {}) })
         if (call) {
-          if (stop === 'opt_out' && !personal) setDoNotCall(db, 'system', call.to_e164, `said on call ${call.id}`)
+          if (stop === 'opt_out' && !personal && !pete) setDoNotCall(db, 'system', call.to_e164, `said on call ${call.id}`)
           // hangup() marks the call synchronously, then waits for the close line to play before ending it.
           void hangup(d, call.id, `hard_stop:${stop}`, c.HANGUP_DELAY_MS + (lead ? speakMs(NOTICE_LINE, 0) : 0))
         }

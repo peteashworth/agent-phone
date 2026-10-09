@@ -111,7 +111,7 @@ describe('answering-machine detection', () => {
   it('hard stops still win before the AMD wait', async () => {
     const { d, call } = await start()
     answer(d, call.id)
-    expect(said(await llm(call.id, 'stop calling me'))).toMatch(/won't call again/)
+    expect(said(await llm(call.id, 'stop calling me'))).toMatch(/let you go/) // Pete's number: no DNC wording
     expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:opt_out')
   })
   it('a late Twilio verdict after our timeout is history only', async () => {
@@ -403,7 +403,7 @@ describe('wait-for-hello opening (blank first_message)', () => {
   it('hard stops still win on the opening turn', async () => {
     const { d, call } = await start()
     answer(d, call.id)
-    expect(said(await opening(call.id, 'Stop calling me.'))).toMatch(/won't call again/)
+    expect(said(await opening(call.id, 'Stop calling me.'))).toMatch(/let you go/)
     expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:opt_out')
   })
   it('AMD off: the greeting is not judged', async () => {

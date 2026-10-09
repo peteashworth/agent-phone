@@ -10,6 +10,7 @@ export const CLOSE_LINES: Record<HardStop, string> = {
 }
 
 /** The close line for a stop. Pete's personal tier: an opt-out isn't a do-not-call, so no "we won't call again". */
+/** personal: Pete's personal tier or his number in any tier (no DNC there, so no "we won't call again"). */
 export function closeLine(stop: HardStop, personal = false): string {
   return personal && stop === 'opt_out' ? "Okay, I'll let you go. Bye." : CLOSE_LINES[stop]
 }
