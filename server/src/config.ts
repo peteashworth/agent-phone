@@ -73,6 +73,9 @@ const schema = z.object({
   // A new request this soon after the previous turn was dropped, when that turn spoke only filler, carries it on
   // (ElevenLabs split one sentence on a pause): merged text, no barge-in. 0 = off.
   CONTINUATION_MS: z.coerce.number().int().min(0).max(10000).default(1500),
+  // ElevenLabs re-sends the request every ~150ms while the callee is still talking. A jasmine turn goes to the host
+  // only after this long with no newer request for the call; a superseded one is answered empty. 0 = off.
+  SETTLE_MS: z.coerce.number().int().min(0).max(2000).default(250),
   TURN_TIMEOUT_S: z.coerce.number().int().min(3).max(60).default(20),
   // No poll from the host for this long = brain offline (place_call refuses, live turns take the exit line).
   BRAIN_OFFLINE_S: z.coerce.number().int().min(5).max(300).default(30),

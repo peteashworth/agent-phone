@@ -125,6 +125,10 @@ logged, tested and consistent.
   new one gets the whole sentence in `user_text` plus `continues: <old seq>` (if the host had picked the old one).
   It is logged as `continued`, not `barge_in`, and has no `interrupted`. Once real answer text has been spoken it
   is a barge-in as before. `user_text` is never empty: if EL rewrote the last user message in place, it is sent again.
+- **Settle** (Oct 8): ElevenLabs re-sends the request every ~150ms while the callee is still talking (seen with
+  speculative_turn on and off). A jasmine turn waits `SETTLE_MS` (250) for a newer request on the same call before it
+  goes to the host; a superseded request is answered empty and leaves no turn row. Settle time is not in the turn
+  timings (the row starts after it). `SETTLE_MS=0` turns it off.
 
 ## 6. Order of checks per turn (all on the droplet, before Jasmine sees anything)
 

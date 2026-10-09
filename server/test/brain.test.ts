@@ -46,7 +46,7 @@ function fakeHost(d: ReturnType<typeof setup>, turns: Answer[] = [], opts: { del
 
 async function start(env: Record<string, string> = {}, input: Record<string, unknown> = {}, host?: Parameters<typeof fakeHost>) {
   const d = setup({ ...LIVE_ENV, CUSTOM_LLM_SECRET: SECRET, AMD_ENABLED: 'false', BRAIN: 'jasmine', CODE_PHRASE: PHRASE,
-    FILLER_AFTER_MS: '10000', FILLER2_AFTER_MS: '0', ...env })
+    FILLER_AFTER_MS: '10000', FILLER2_AFTER_MS: '0', SETTLE_MS: '0', ...env })
   app = await buildApp({ config: d.config, db: d.db, clients: d })
   const seen = fakeHost(d, ...((host?.slice(1) ?? []) as [Answer[]?, { delayMs?: number }?]))
   const placed = await placeCall(d, 'jasmine', { to: '+14358403707', purpose: 'test', brief: 'say hi', dry_run: false, ...input })
@@ -287,6 +287,39 @@ describe('continuation (one sentence split on a pause)', () => {
     expect(onlyFiller(null)).toBe(true)
     expect(onlyFiller(FILLER_LINES[2] + FILLER2_LINE)).toBe(true)
     expect(onlyFiller(FILLER_LINES[0] + 'It is Thursday.')).toBe(false)
+  })
+})
+
+describe('settle (ElevenLabs re-sends every ~150ms mid-speech)', () => {
+  const turnJobs = (seen: JobRow[]) => seen.filter(j => j.type === 'turn').map(j => JSON.parse(j.payload))
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+  it('a burst sends one turn to the host: the newest; the superseded requests answer empty and leave no turn row', async () => {
+    const { d, call, seen } = await start({ SETTLE_MS: '120' }, {}, [undefined as never, [{ say: 'Nice.' }]])
+    const a = ask(call.id, 'Uh, just')
+    await sleep(40); const b = ask(call.id, 'Uh, just trying')
+    await sleep(40); const c = ask(call.id, 'Uh, just trying to work on the kit.')
+    const [ra, rb, rc] = await Promise.all([a, b, c])
+    expect([spoken(ra.body), spoken(rb.body), spoken(rc.body)]).toEqual(['', '', 'Nice.'])
+    expect(turnJobs(seen)).toHaveLength(1)
+    expect(turnJobs(seen)[0]).toMatchObject({ user_text: 'Uh, just trying to work on the kit.' })
+    expect(all<{ outcome: string }>(d.db, 'SELECT outcome FROM call_turns WHERE call_id = ?', call.id).map(r => r.outcome)).toEqual(['ok'])
+  })
+  it('a lone request waits SETTLE_MS, then goes to the host as usual', async () => {
+    const { call, seen } = await start({ SETTLE_MS: '100' }, {}, [undefined as never, [{ say: 'Hi there.' }]])
+    const t0 = Date.now()
+    const r = ask(call.id, 'Hello?')
+    await sleep(50)
+    expect(turnJobs(seen)).toHaveLength(0)
+    expect(spoken((await r).body)).toBe('Hi there.')
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(100)
+    expect(turnJobs(seen)).toHaveLength(1)
+  })
+  it('requests further apart than SETTLE_MS each go through (the merge window handles those)', async () => {
+    const { call, seen } = await start({ SETTLE_MS: '30' }, {}, [undefined as never, [{ say: 'One.' }, { say: 'Two.' }]])
+    expect(spoken((await ask(call.id, 'First thing.')).body)).toBe('One.')
+    expect(spoken((await ask(call.id, 'First thing.', 'Second thing.')).body)).toBe('Two.')
+    expect(turnJobs(seen)).toHaveLength(2)
   })
 })
 

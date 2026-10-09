@@ -44,6 +44,26 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
   const configured: Brain = makeBrain(c), canned = cannedBrain()
   const brainFor = (kind: string): Brain => d.brain ?? (kind === 'openai' ? configured : canned)
 
+  // Settle: the newest request per call. One waiting request is superseded when a newer one arrives or ElevenLabs drops it.
+  const latest = new Map<string, number>()
+  let reqSeq = 0
+  /** Wait SETTLE_MS; true if this is still the call's newest request and its connection is open. */
+  const settle = async (callId: string, res: FastifyReply['raw']): Promise<boolean> => {
+    if (!c.SETTLE_MS) return true
+    const mine = ++reqSeq
+    latest.set(callId, mine)
+    let dropped = false
+    await new Promise<void>(resolve => {
+      const done = () => { clearTimeout(t); res.off('close', onClose); resolve() }
+      const onClose = () => { dropped = true; done() }
+      const t = setTimeout(done, c.SETTLE_MS)
+      res.once('close', onClose)
+    })
+    const current = latest.get(callId) === mine
+    if (current) latest.delete(callId)
+    return current && !dropped
+  }
+
   const handler = async (req: { headers: Record<string, unknown>; body: unknown; log: FastifyInstance['log'] }, reply: FastifyReply) => {
     if (!c.CUSTOM_LLM_SECRET) return reply.code(503).send({ error: 'custom LLM endpoint is not configured' })
     const auth = req.headers.authorization
@@ -108,6 +128,10 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       } else if (opening) {
         if (now) log = new TurnLog(d, now, kind, 'disclosure')
         source = (async function* () { yield DISCLOSURE })()
+      } else if (now && kind === 'jasmine' && !(await settle(now.id, reply.raw))) {
+        // A newer request for this call arrived (or this one was dropped) while settling: no turn, nothing said.
+        req.log.info({ call: now.id }, 'superseded while settling')
+        source = (async function* () {})()
       } else if (now && kind === 'jasmine') {
         const cont = takeContinuation(d, now.id) // before this turn's row exists: it looks at the previous one
         log = new TurnLog(d, now, kind, 'brain')
@@ -154,6 +178,7 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
 
     reply.hijack()
     const res = reply.raw
+    if (res.destroyed) return // dropped while settling
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' })
     let closed = false
     res.on('close', () => {
