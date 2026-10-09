@@ -103,6 +103,11 @@ const schema = z.object({
 
   ELEVENLABS_API_KEY: z.string().optional(),
   ELEVENLABS_AGENT_ID: z.string().optional(),
+  // The Pete agent (recording off, deleted after each call). Calls to PERSONAL_OK_NUMBERS use it; unset = they don't
+  // (and can't unlock the personal tier).
+  ELEVENLABS_PETE_AGENT_ID: z.string().optional(),
+  // Hours after a Pete-agent call is finalized before its spoken text is scrubbed from the droplet. 0 = right away.
+  PERSONAL_RETENTION_HOURS: z.coerce.number().min(0).max(168).default(0),
 
   TWILIO_API_BASE: z.url().default('https://api.twilio.com'),
   ELEVENLABS_API_BASE: z.url().default('https://api.elevenlabs.io'),

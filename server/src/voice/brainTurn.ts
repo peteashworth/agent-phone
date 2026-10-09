@@ -171,7 +171,8 @@ export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage
   let codePhrase: 'verified' | null = null
   const phrase = c.CODE_PHRASE
 
-  const okNumber = c.PERSONAL_OK_NUMBERS.includes(call.to_e164)
+  // Only Pete-agent calls (recording off, deleted after) can unlock; the number is re-checked against today's env.
+  const okNumber = !!call.private && c.PERSONAL_OK_NUMBERS.includes(call.to_e164)
   const hit = phrase ? fresh.filter(t => findPhrase(t, phrase)) : []
   if (hit.length) {
     log.redact.push(...hit.map(sha256))

@@ -11,7 +11,7 @@ import type { TwilioClient } from './voice/twilio.ts'
 import type { Brain } from './voice/brain.ts'
 import { loadFacts, pickFacts, factsFor } from './facts.ts'
 import { brainOnline, enqueueJob, awaitJob, cancelJob } from './brainJobs.ts'
-import { openerFor } from './voice/lines.ts'
+import { openerFor, PETE_OPENER } from './voice/lines.ts'
 
 export type Deps = { config: Config; db: DB; elevenlabs: ElevenLabsClient; twilio: TwilioClient; clock?: () => Date; brain?: Brain }
 
@@ -39,6 +39,7 @@ export type CallRow = {
   recording_path: string | null; recording_bytes: number | null; recording_deleted_at: string | null
   brain: BrainKind | null; brief_personal: string | null; has_brief_personal: number; facts: string | null; tier: 'public' | 'personal'
   code_asked: number; code_attempts: number; notes: string | null; brain_seq: number
+  private: number; el_agent_id: string | null; el_deleted_at: string | null; scrubbed_at: string | null
 }
 
 /** A refusal the caller should see verbatim (not a server fault). */
@@ -71,6 +72,7 @@ export async function placeCall(d: Deps, agentId: string, input: PlaceCallInput)
   if (input.brief_personal?.trim()) {
     if (brain !== 'jasmine') refuse('brief_personal_needs_jasmine', 'brief_personal is only used with brain "jasmine"', to)
     if (!c.PERSONAL_OK_NUMBERS.includes(to)) refuse('brief_personal_not_allowed', `${to} can never unlock the personal tier, so brief_personal would never be used`, to)
+    if (!c.ELEVENLABS_PETE_AGENT_ID) refuse('brief_personal_not_allowed', 'The personal tier needs the Pete agent (ELEVENLABS_PETE_AGENT_ID), which is not set on the server', to)
   }
   const factSel = [...new Set(input.facts ?? [])]
   if (factSel.length) {
@@ -88,18 +90,21 @@ export async function placeCall(d: Deps, agentId: string, input: PlaceCallInput)
   if (bad) refuse(bad.code, bad.message, to)
 
   const trusted = !!one(db, 'SELECT 1 FROM contacts WHERE e164 = ? AND trusted = 1', to)
+  // Pete's numbers go through the Pete agent (recording off, deleted after the call, no recording notice).
+  const isPrivate = !!c.ELEVENLABS_PETE_AGENT_ID && c.PERSONAL_OK_NUMBERS.includes(to)
   const id = 'call_' + randomBytes(9).toString('base64url')
   const token = trusted ? null : 'cfm_' + randomBytes(18).toString('base64url')
   const expires = new Date(clock(d).getTime() + c.CONFIRM_TTL_MIN * 60_000).toISOString()
   run(db, `INSERT INTO calls (id, agent_id, to_e164, from_e164, from_label, purpose, brief, plan, dry_run, status, max_seconds,
-                             confirm_hash, confirm_expires_at, brain, brief_personal, has_brief_personal, facts)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             confirm_hash, confirm_expires_at, brain, brief_personal, has_brief_personal, facts, private, el_agent_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id, agentId, to, fromE164, fromLabel, input.purpose, input.brief, input.plan ?? null, dry ? 1 : 0,
     token ? 'awaiting_confirmation' : 'pending', c.MAX_CALL_SECONDS, token && sha256(token), token && expires,
-    brain, input.brief_personal?.trim() || null, input.brief_personal?.trim() ? 1 : 0, factSel.length ? JSON.stringify(factSel) : null)
+    brain, input.brief_personal?.trim() || null, input.brief_personal?.trim() ? 1 : 0, factSel.length ? JSON.stringify(factSel) : null,
+    isPrivate ? 1 : 0, (isPrivate ? c.ELEVENLABS_PETE_AGENT_ID : c.ELEVENLABS_AGENT_ID) ?? null)
   // Fact ids only, never values; brief_personal only as a flag.
   audit(db, agentId, 'call.place', id, { to, from: fromLabel, dry, needs_confirmation: !trusted, brain,
-    facts: factSel, has_brief_personal: !!input.brief_personal?.trim() })
+    facts: factSel, has_brief_personal: !!input.brief_personal?.trim(), ...(isPrivate ? { private: true } : {}) })
 
   if (token) {
     event(db, id, 'server', 'awaiting_confirmation', { expires_at: expires })
@@ -170,7 +175,8 @@ export function callStartPayload(d: Deps, call: CallRow) {
     from_label: call.from_label, purpose: call.purpose, brief: call.brief, plan: call.plan,
     facts: factsFor(picked, 'anyone'),
     has_brief_personal: !!call.has_brief_personal,
-    disclosure: openerFor(contact), // what the callee heard first
+    private: !!call.private, // Pete agent: not recorded, deleted after the call
+    disclosure: call.private ? PETE_OPENER : openerFor(contact), // what the callee heard first
     rules: { max_seconds: call.max_seconds, tier: 'public', style: 'spoken prose, 1-3 sentences, no markdown/emoji/URLs' },
   }
 }
@@ -206,7 +212,7 @@ async function dial(d: Deps, id: string): Promise<void> {
   const call = getCall(db, id)!
   try {
     const reg = await d.elevenlabs.registerCall({
-      from: call.from_e164, to: call.to_e164,
+      from: call.from_e164, to: call.to_e164, agentId: call.el_agent_id ?? undefined,
       dynamicVariables: { call_id: id, purpose: call.purpose, brief: call.brief, plan: call.plan ?? '' },
     })
     run(db, 'UPDATE calls SET el_conversation_id = ? WHERE id = ?', reg.conversationId, id)

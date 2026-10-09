@@ -1,5 +1,9 @@
 # Milestone D: Jasmine as the phone brain (DRAFT for review, no code yet)
 
+> **Oct 9 update (Pete tier):** `ask_code` / `[[ask_code]]` are gone. The server matches the code phrase loosely on
+> every turn and silently counts near-misses (max 3), with no "incorrect" note. Only private Pete-agent calls can unlock.
+> See docs/pete-tier.md.
+
 Pete's decision (Oct 8): the voice brain is the real Jasmine, not a fast model, and there's no Anthropic key. Each turn
 goes from `/phone/llm/v1` to a dedicated **phone session** of Jasmine. It uses the same pattern as ha-voice: a host
 channel adapter, then a separate session under Jasmine's agent group, then the reply comes back. This doc covers the

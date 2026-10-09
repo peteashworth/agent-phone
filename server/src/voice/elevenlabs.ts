@@ -3,6 +3,8 @@ import { type Fetch, ProviderError } from './http.ts'
 
 export type RegisterCall = {
   from: string; to: string
+  /** Defaults to ELEVENLABS_AGENT_ID. */
+  agentId?: string
   dynamicVariables?: Record<string, string | number | boolean>
 }
 
@@ -13,6 +15,8 @@ export type ElevenLabsClient = {
   getConversation(id: string): Promise<Conversation>
   /** Call audio (mp3). */
   getAudio(id: string): Promise<Uint8Array>
+  /** Deletes the conversation (transcript, audio, analysis). A 404 counts as deleted. */
+  deleteConversation(id: string): Promise<void>
 }
 
 export type Conversation = {
@@ -41,13 +45,18 @@ export function elevenLabsClient(c: Config, f: Fetch = fetch): ElevenLabsClient 
       if (!res.ok) throw new ProviderError('elevenlabs', res.status, await res.text())
       return new Uint8Array(await res.arrayBuffer())
     },
+    async deleteConversation(id) {
+      const res = await f(conv(id), { method: 'DELETE', headers: { 'xi-api-key': key() } })
+      if (!res.ok && res.status !== 404) throw new ProviderError('elevenlabs', res.status, await res.text())
+    },
     async registerCall(r) {
-      if (!c.ELEVENLABS_API_KEY || !c.ELEVENLABS_AGENT_ID) throw new Error('ElevenLabs is not configured')
+      const agentId = r.agentId ?? c.ELEVENLABS_AGENT_ID
+      if (!c.ELEVENLABS_API_KEY || !agentId) throw new Error('ElevenLabs is not configured')
       const res = await f(`${c.ELEVENLABS_API_BASE}/v1/convai/twilio/register-call`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'xi-api-key': c.ELEVENLABS_API_KEY },
         body: JSON.stringify({
-          agent_id: c.ELEVENLABS_AGENT_ID, from_number: r.from, to_number: r.to, direction: 'outbound',
+          agent_id: agentId, from_number: r.from, to_number: r.to, direction: 'outbound',
           ...(r.dynamicVariables && { conversation_initiation_client_data: { dynamic_variables: r.dynamicVariables } }),
         }),
       })

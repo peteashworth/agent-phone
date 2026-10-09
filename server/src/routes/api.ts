@@ -1,5 +1,6 @@
 // Read-only call log for the dashboard: {BASE_PATH}/api/calls[/:id[/recording]]. Bearer key, read (or agent) scope.
 // Never returns brief/plan text to read-scope keys: the dashboard shows what happened, not Pete's instructions.
+// Pete-agent calls (private) are metadata only: no purpose, summary, transcript or notes, even before the scrub.
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -11,12 +12,13 @@ import { getContact } from '../contacts.ts'
 export function callSummary(d: Deps, c: CallRow) {
   return {
     id: c.id, status: c.status, dry_run: !!c.dry_run, to: c.to_e164, contact: getContact(d.db, c.to_e164)?.name ?? null,
-    from: c.from_e164, from_label: c.from_label, agent: c.agent_id, purpose: c.purpose,
+    from: c.from_e164, from_label: c.from_label, agent: c.agent_id, purpose: c.private ? null : c.purpose,
     created_at: c.created_at, started_at: c.started_at, ended_at: c.ended_at, duration_s: c.duration_s,
     end_reason: c.end_reason, error: c.error, answered_by: c.answered_by,
-    summary_title: c.summary_title, summary: c.summary, cost_usd: c.cost_usd,
+    summary_title: c.private ? null : c.summary_title, summary: c.private ? null : c.summary, cost_usd: c.cost_usd,
     has_recording: !!c.recording_path, recording_deleted: !!c.recording_deleted_at, finalized: !!c.finalized_at,
     brain: c.brain, tier: c.tier,
+    private: !!c.private, el_deleted: !!c.el_deleted_at, scrubbed: !!c.scrubbed_at,
   }
 }
 
@@ -51,10 +53,10 @@ export function callTurns(d: Deps, id: string) {
 export function callDetail(d: Deps, c: CallRow) {
   return {
     ...callSummary(d, c),
-    transcript: c.transcript ? JSON.parse(c.transcript) as unknown[] : null,
+    transcript: c.transcript && !c.private ? JSON.parse(c.transcript) as unknown[] : null,
     cost: { usd: c.cost_usd, elevenlabs_credits: c.el_cost_credits, twilio_usd: c.twilio_price_usd, amd: !!c.amd },
     events: callEvents(d.db, c.id),
-    notes: JSON.parse(c.notes ?? '[]') as string[],
+    notes: c.private ? [] : JSON.parse(c.notes ?? '[]') as string[],
     ...callTurns(d, c.id),
   }
 }

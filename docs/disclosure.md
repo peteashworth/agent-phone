@@ -22,6 +22,9 @@ _Last changed: Oct 8, 2026 (Pete, via Jasmine). Supersedes the Oct 6 wording._
   a recording objection. Logged as a `notice_repeated` event; the opener turn's outcome becomes `interrupted`. The
   callee's next reply counts as after-disclosure, so "Don't record me" fires the recording-objection stop.
 - There is **no confirmation question**. If the person doesn't want to stay on the call, they can hang up.
+- **Pete's own number** (Oct 9, Pete agent): calls to PERSONAL_OK_NUMBERS go through the separate ElevenLabs agent
+  "Jasmine Phone — Pete" (recording off, conversation deleted after the call). The opener is "Hey Pete, it's Jasmine."
+  with no recording notice and no notice re-speak. Only when ELEVENLABS_PETE_AGENT_ID is set; otherwise the normal opener.
 - The old Oct 6 wording ("…calling on behalf of Pete. This call is being recorded. Is that okay?") is retired.
 
 ## Hard stops (server-enforced, `server/src/voice/hardStops.ts`)

@@ -98,6 +98,8 @@ export async function postCallSweep(d: Deps): Promise<string[]> {
   for (const id of await fillPrices(d)) changed.add(id)
   for (const id of await fillDurations(d)) changed.add(id)
   for (const id of purgeRecordings(d)) changed.add(id)
+  for (const id of await deletePending(d)) changed.add(id)
+  for (const id of scrubPrivate(d)) changed.add(id)
   return [...changed]
 }
 
@@ -109,6 +111,7 @@ async function finalizeCalls(d: Deps): Promise<string[]> {
   for (const call of pending) {
     run(db, 'UPDATE calls SET finalize_attempts = finalize_attempts + 1 WHERE id = ?', call.id)
     const last = call.finalize_attempts + 1 >= MAX_FINALIZE_ATTEMPTS
+    if (call.private) { if (await finalizePrivate(d, call, last)) done.push(call.id); continue }
     // Never answered (busy, no-answer, failed before connect): ElevenLabs has nothing worth keeping.
     if (!call.el_conversation_id || !call.started_at) { finish(d, call.id, 'no_conversation'); done.push(call.id); continue }
     try {
@@ -130,6 +133,72 @@ async function finalizeCalls(d: Deps): Promise<string[]> {
     }
   }
   return done
+}
+
+/**
+ * Pete-agent calls: metadata only (ElevenLabs credits, duration). The transcript, summary and audio are never stored,
+ * and the ElevenLabs conversation is deleted (deletePending retries if that fails).
+ */
+async function finalizePrivate(d: Deps, call: CallRow, last: boolean): Promise<boolean> {
+  const { db } = d
+  if (call.el_conversation_id && call.started_at) {
+    try {
+      const conv = await d.elevenlabs.getConversation(call.el_conversation_id)
+      if (!DONE.has(conv.status) && !last) return false // ElevenLabs is still processing; deleting now may not stick
+      const secs = conv.metadata?.call_duration_secs
+      run(db, 'UPDATE calls SET el_cost_credits = ?, duration_s = CASE WHEN COALESCE(duration_s, 0) = 0 THEN ? ELSE duration_s END WHERE id = ?',
+        conv.metadata?.cost ?? null, secs ? Math.round(secs) : null, call.id)
+      updateCost(d, call.id)
+    } catch (e) {
+      event(db, call.id, 'server', 'finalize_error', { error: (e as Error).message, attempt: call.finalize_attempts + 1 })
+      if (!last) return false
+    }
+  }
+  if (call.el_conversation_id) await deleteConversation(d, call)
+  finish(d, call.id, 'private')
+  return true
+}
+
+async function deleteConversation(d: Deps, call: CallRow): Promise<boolean> {
+  try {
+    await d.elevenlabs.deleteConversation(call.el_conversation_id!)
+    run(d.db, 'UPDATE calls SET el_deleted_at = ? WHERE id = ?', now(), call.id)
+    event(d.db, call.id, 'server', 'el_deleted', {})
+    return true
+  } catch (e) {
+    event(d.db, call.id, 'server', 'el_delete_error', { error: (e as Error).message.slice(0, 200) })
+    return false
+  }
+}
+
+/** Pete-agent conversations whose delete failed at finalize: try again every sweep until it lands. */
+async function deletePending(d: Deps): Promise<string[]> {
+  const rows = all<CallRow>(d.db, `SELECT * FROM calls WHERE private = 1 AND finalized_at IS NOT NULL AND el_conversation_id IS NOT NULL
+    AND el_deleted_at IS NULL ORDER BY finalized_at LIMIT 10`)
+  const done: string[] = []
+  for (const call of rows) if (await deleteConversation(d, call)) done.push(call.id)
+  return done
+}
+
+/**
+ * Pete-agent calls, PERSONAL_RETENTION_HOURS after finalize: spoken text goes (what we said, brain job payloads and
+ * results, purpose/brief/plan/notes). Timings, outcomes, cost and end reason stay. Waits while the call.end notice is
+ * still pending, since it carries the notes to the phone session.
+ */
+export function scrubPrivate(d: Deps): string[] {
+  const before = new Date(Date.now() - d.config.PERSONAL_RETENTION_HOURS * 3600_000).toISOString()
+  const rows = all<{ id: string }>(d.db, `SELECT id FROM calls c WHERE private = 1 AND scrubbed_at IS NULL
+    AND finalized_at IS NOT NULL AND finalized_at <= ?
+    AND NOT EXISTS (SELECT 1 FROM brain_jobs j WHERE j.call_id = c.id AND j.status IN ('queued', 'picked') AND j.deadline_at > ?)
+    LIMIT 50`, before, now())
+  for (const { id } of rows) {
+    run(d.db, "UPDATE brain_jobs SET payload = '{}', result = NULL, error = NULL WHERE call_id = ?", id)
+    run(d.db, 'UPDATE call_turns SET said = NULL, redact_hash = NULL WHERE call_id = ?', id)
+    run(d.db, `UPDATE calls SET purpose = '(personal)', brief = '', plan = NULL, notes = NULL, brief_personal = NULL,
+      transcript = NULL, summary = NULL, summary_title = NULL, scrubbed_at = ? WHERE id = ?`, now(), id)
+    event(d.db, id, 'server', 'scrubbed', {})
+  }
+  return rows.map(r => r.id)
 }
 
 /**

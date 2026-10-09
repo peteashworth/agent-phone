@@ -13,7 +13,7 @@ import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '..
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine, alreadySaid, takeContinuation } from '../voice/brainTurn.ts'
 import type { FilterOptions } from '../voice/outputFilter.ts'
 import { awaitHuman, applyGreeting, isMachine } from '../postcall.ts'
-import { openerFor, NOTICE_LINE, EXIT_LINE, noticeHeard, speakMs } from '../voice/lines.ts'
+import { openerFor, PETE_OPENER, NOTICE_LINE, EXIT_LINE, noticeHeard, speakMs } from '../voice/lines.ts'
 import { effective } from '../settings.ts'
 
 type Body = { model?: string; messages?: ChatMessage[]; stream?: boolean }
@@ -89,13 +89,15 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     const lastUser = textOf(messages[lastUserIdx]?.content)
     // Is this the person's reply to the disclosure ("…This call is being recorded.")? Holds for option A and B alike.
     const prevAgent = messages.slice(0, Math.max(lastUserIdx, 0)).findLast(m => m.role === 'assistant')
-    const afterDisclosure = /being recorded/i.test(textOf(prevAgent?.content))
+    // Pete-agent calls aren't recorded and never say so: no notice, no "reply to the disclosure" rule.
+    const isPrivate = !!call?.private
+    const afterDisclosure = !isPrivate && /being recorded/i.test(textOf(prevAgent?.content))
     // Wait-for-hello opening (agent first_message blank): nothing has been said to the callee yet.
     const agentTexts = messages.filter(m => m.role === 'assistant').map(m => textOf(m.content)).filter(t => t.trim())
     const opening = !agentTexts.length
     // The opener was cut off before "being recorded" (or the brain spoke without it): the notice goes ahead of this
     // turn's line. Repeats until ElevenLabs reports it as played.
-    const noticeDue = !opening && !noticeHeard(agentTexts)
+    const noticeDue = !opening && !isPrivate && !noticeHeard(agentTexts)
     const repeatNotice = (call: CallRow, log: TurnLog) => {
       log.notice = true
       event(db, call.id, 'server', 'notice_repeated', { turn: log.kind, heard: agentTexts[0].slice(0, 200) })
@@ -156,7 +158,8 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         source = (async function* () { if (line) yield line })()
       } else if (opening) {
         if (now) log = new TurnLog(d, now, kind, 'disclosure')
-        const line = openerFor(now ? getContact(db, now.to_e164) : null) // known contacts: first-name opener, still "being recorded"
+        // Known contacts: first-name opener, still "being recorded". Pete-agent calls: PETE_OPENER (not recorded).
+        const line = now?.private ? PETE_OPENER : openerFor(now ? getContact(db, now.to_e164) : null)
         source = (async function* () { yield line })()
       } else if (now && kind === 'jasmine' && !(await settle(now.id, reply.raw, req.log))) {
         // A newer request for this call arrived (or this one was dropped) while settling: no turn, nothing said.

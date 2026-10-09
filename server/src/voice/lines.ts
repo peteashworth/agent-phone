@@ -14,6 +14,12 @@ export function openerFor(contact?: { name?: string | null; known?: number | boo
   if (!/^\p{L}[\p{L}'’-]{0,29}$/u.test(first)) return DISCLOSURE
   return withRecordingNotice(`Hi ${first}, this call's being recorded. It's Jasmine, Pete's assistant.`)
 }
+/**
+ * Pete-agent calls (calls.private): recording is off on that agent, so there's no recording notice, and the callee is
+ * Pete himself.
+ */
+export const PETE_OPENER = "Hey Pete, it's Jasmine."
+
 /** The guard: an opener without the recording notice is never spoken. */
 export const withRecordingNotice = (line: string) => /\bbeing recorded\b/i.test(line) ? line : DISCLOSURE
 

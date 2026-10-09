@@ -18,6 +18,8 @@ export function setup(env: Record<string, string> = {}) {
   const twilioState: Record<string, { status: string; duration: number | null; price?: number | null }> = {}
   const conversations: Record<string, Conversation> = {}
   const audio: Record<string, Uint8Array> = {}
+  const deleted: string[] = []
+  const failDelete = { on: false }
   const elevenlabs: ElevenLabsClient = {
     async registerCall(r) {
       registered.push(r)
@@ -25,6 +27,7 @@ export function setup(env: Record<string, string> = {}) {
     },
     async getConversation(id) { return conversations[id] ?? { status: 'processing' } },
     async getAudio(id) { if (!audio[id]) throw new Error('no audio'); return audio[id] },
+    async deleteConversation(id) { if (failDelete.on) throw new Error('delete failed'); deleted.push(id); delete conversations[id] },
   }
   const twilio: TwilioClient = {
     async createCall(d) { dials.push(d); return { sid: 'CAtest' + dials.length, status: 'queued' } },
@@ -33,7 +36,7 @@ export function setup(env: Record<string, string> = {}) {
   }
   const now = { t: NOON }
   const clock = () => now.t
-  return { config, db, elevenlabs, twilio, dials, ended, registered, twilioState, conversations, audio, clock, now }
+  return { config, db, elevenlabs, twilio, dials, ended, registered, twilioState, conversations, audio, deleted, failDelete, clock, now }
 }
 
 export const LIVE_ENV = {

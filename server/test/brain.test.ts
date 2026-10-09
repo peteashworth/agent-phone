@@ -5,7 +5,7 @@ import { createKey } from '../src/auth.ts'
 import { placeCall, getCall, warming, CallRefused, callEvents } from '../src/calls.ts'
 import { claimNext, submitResult, markPoll, getJob, enqueueJob, type JobRow } from '../src/brainJobs.ts'
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, onlyFiller } from '../src/voice/brainTurn.ts'
-import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, NOTICE_LINE, pickFiller } from '../src/voice/lines.ts'
+import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, NOTICE_LINE, PETE_OPENER, pickFiller } from '../src/voice/lines.ts'
 import { findPhrase, nearMiss, removePhrase } from '../src/voice/codePhrase.ts'
 import { isQuestion, isGoodbye } from '../src/voice/question.ts'
 import { OutputFilter, BLOCKED_LINE } from '../src/voice/outputFilter.ts'
@@ -46,7 +46,7 @@ function fakeHost(d: ReturnType<typeof setup>, turns: Answer[] = [], opts: { del
 }
 
 async function start(env: Record<string, string> = {}, input: Record<string, unknown> = {}, host?: Parameters<typeof fakeHost>) {
-  const d = setup({ ...LIVE_ENV, CUSTOM_LLM_SECRET: SECRET, AMD_ENABLED: 'false', BRAIN: 'jasmine', CODE_PHRASE: PHRASE,
+  const d = setup({ ...LIVE_ENV, ELEVENLABS_PETE_AGENT_ID: 'agent_pete', CUSTOM_LLM_SECRET: SECRET, AMD_ENABLED: 'false', BRAIN: 'jasmine', CODE_PHRASE: PHRASE,
     FILLER_AFTER_MS: '10000', FILLER2_AFTER_MS: '0', SETTLE_MS: '0', ...env })
   app = await buildApp({ config: d.config, db: d.db, clients: d })
   const seen = fakeHost(d, ...((host?.slice(1) ?? []) as [Answer[]?, { delayMs?: number }?]))
@@ -440,9 +440,10 @@ describe('recording notice repeat (Bob call: opener cut off at "Hi Bob, it\'s Ja
   const events = (d: ReturnType<typeof setup>, id: string, type: string) =>
     all<{ data: string }>(d.db, 'SELECT data FROM call_events WHERE call_id = ? AND type = ?', id, type).map(r => JSON.parse(r.data))
   const CUT = "Hi Bob, it's"
+  const PUBLIC = { ELEVENLABS_PETE_AGENT_ID: '' } // the main agent: recorded, notice rules on
 
   it('opener cut off: the notice goes ahead of the next reply, logged, opener turn marked interrupted', async () => {
-    const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Hey, so about Saturday.' }]])
+    const { d, call } = await start(PUBLIC, {}, [undefined as never, [{ say: 'Hey, so about Saturday.' }]])
     await post(call.id, [{ role: 'user', content: 'Hello?' }]) // opening: the disclosure turn row
     const r = await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: 'Who is this?' }])
     expect(spoken(r.body)).toBe(NOTICE_LINE + 'Hey, so about Saturday.')
@@ -451,21 +452,21 @@ describe('recording notice repeat (Bob call: opener cut off at "Hi Bob, it\'s Ja
       .map(t => [t.kind, t.outcome])).toEqual([['disclosure', 'interrupted'], ['brain', 'ok']])
   })
   it('notice heard: no repeat', async () => {
-    const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Great.' }]])
+    const { d, call } = await start(PUBLIC, {}, [undefined as never, [{ say: 'Great.' }]])
     const r = await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: "Hi Bob, this call's being recorded. It's" },
       { role: 'user', content: 'Oh hi.' }])
     expect(spoken(r.body)).toBe('Great.')
     expect(events(d, call.id, 'notice_repeated')).toEqual([])
   })
   it('the brain said it itself on a later turn: no repeat', async () => {
-    const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Sure.' }]])
+    const { d, call } = await start(PUBLIC, {}, [undefined as never, [{ say: 'Sure.' }]])
     const r = await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: 'Who?' },
       { role: 'assistant', content: "It's Jasmine, Pete's assistant, and this call is being recorded." }, { role: 'user', content: 'Okay.' }])
     expect(spoken(r.body)).toBe('Sure.')
     expect(events(d, call.id, 'notice_repeated')).toEqual([])
   })
   it('an objection right after the repeated notice is a recording objection', async () => {
-    const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Hey.' }]])
+    const { d, call } = await start(PUBLIC, {}, [undefined as never, [{ say: 'Hey.' }]])
     const first = spoken((await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: 'Yeah?' }])).body)
     expect(first.startsWith(NOTICE_LINE)).toBe(true)
     await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: 'Yeah?' },
@@ -473,13 +474,25 @@ describe('recording notice repeat (Bob call: opener cut off at "Hi Bob, it\'s Ja
     expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:recording_objection')
   })
   it('a hard stop before the notice was heard says it first; a recording objection does not', async () => {
-    const { d, call } = await start()
+    const { d, call } = await start(PUBLIC)
     const r = await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: "I don't want to talk to a robot." }])
     expect(spoken(r.body).startsWith(NOTICE_LINE)).toBe(true)
     expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:ai_objection')
-    const b = await start()
+    const b = await start(PUBLIC)
     const s = await post(b.call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: 'Are you recording this? Stop recording.' }])
     expect(spoken(s.body)).not.toContain(NOTICE_LINE)
+  })
+  it('Pete-agent calls: Pete opener, no recording notice ever, no after-disclosure rule', async () => {
+    const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Morning.' }]])
+    expect(call).toMatchObject({ private: 1, el_agent_id: 'agent_pete' })
+    expect((d.registered[0] as { agentId: string }).agentId).toBe('agent_pete')
+    const open = await post(call.id, [{ role: 'user', content: 'Hello?' }])
+    expect(spoken(open.body)).toBe(PETE_OPENER)
+    expect(PETE_OPENER).not.toMatch(/record/i)
+    const r = await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: 'Hey' }, { role: 'user', content: "Please don't recall." }])
+    expect(spoken(r.body)).toBe('Morning.')
+    expect(events(d, call.id, 'notice_repeated')).toEqual([])
+    expect(getCall(d.db, call.id)!.end_reason).toBeNull()
   })
 })
 

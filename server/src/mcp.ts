@@ -24,6 +24,7 @@ function view(c: CallRow) {
     brain: c.brain ?? undefined, tier: c.brain === 'jasmine' ? c.tier : undefined,
     has_brief_personal: c.has_brief_personal ? true : undefined,
     notes: c.notes ? JSON.parse(c.notes) as string[] : undefined,
+    private: c.private ? true : undefined, scrubbed: c.scrubbed_at ? true : undefined,
   }
 }
 

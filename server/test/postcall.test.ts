@@ -8,6 +8,7 @@ import { createKey, twilioSignature } from '../src/auth.ts'
 import { placeCall, getCall, applyTwilioStatus } from '../src/calls.ts'
 import { postCallSweep, purgeRecordings } from '../src/postcall.ts'
 import { run, all } from '../src/db.ts'
+import { enqueueJob } from '../src/brainJobs.ts'
 import { DISCLOSURE, openerFor, withRecordingNotice } from '../src/voice/lines.ts'
 import { detectHardStop } from '../src/voice/hardStops.ts'
 import { classifyGreeting } from '../src/voice/greeting.ts'
@@ -421,4 +422,91 @@ describe('classifyGreeting', () => {
     ['Sure, I can talk for a few minutes, what is this about exactly then?', false, null],
     ['Sorry, your call cannot be answered. Press one to leave a callback number.', false, 'machine'],
   ] as const)('%s (opening %s) -> %s', (text, opening, want) => expect(classifyGreeting(text, opening)).toBe(want))
+})
+
+describe('Pete-agent calls (private): metadata only, ElevenLabs copy deleted, text scrubbed', () => {
+  const conv = {
+    status: 'done', has_audio: true,
+    transcript: [{ role: 'agent', message: "Hey Pete, it's Jasmine.", time_in_call_secs: 0 }, { role: 'user', message: 'Something personal.', time_in_call_secs: 3 }],
+    analysis: { transcript_summary: 'Personal summary.', call_summary_title: 'Personal' },
+    metadata: { cost: 120, call_duration_secs: 41.4 },
+  }
+  const PETE = { ELEVENLABS_PETE_AGENT_ID: 'agent_pete', AMD_ENABLED: 'false' }
+  async function ended(env: Record<string, string> = {}) {
+    const s = await start({ ...PETE, ...env })
+    answer(s.d, s.call.id)
+    await llm(s.call.id, 'Something personal.') // a turn row with what we said
+    applyTwilioStatus(s.d.db, s.call.id, { CallSid: 'CAtest1', CallStatus: 'completed' })
+    s.d.conversations.conv_test1 = conv
+    s.d.audio.conv_test1 = new Uint8Array([1, 2, 3])
+    return s
+  }
+
+  it('keeps credits and duration, never the transcript/summary/audio; deletes the conversation; scrubs at once', async () => {
+    const { d, call } = await ended()
+    expect(call).toMatchObject({ private: 1, el_agent_id: 'agent_pete' })
+    expect(all<{ said: string | null }>(d.db, 'SELECT said FROM call_turns WHERE call_id = ?', call.id)[0].said).toBeTruthy()
+    await postCallSweep(d)
+    const c = getCall(d.db, call.id)!
+    expect(c).toMatchObject({ transcript: null, summary: null, summary_title: null, recording_path: null, el_cost_credits: 120,
+      purpose: '(personal)', brief: '', plan: null, notes: null })
+    expect(c.duration_s).toBeGreaterThan(0)
+    expect(c.finalized_at && c.el_deleted_at && c.scrubbed_at).toBeTruthy()
+    expect(d.deleted).toEqual(['conv_test1'])
+    expect(existsSync(join(d.config.DATA_DIR, 'recordings'))).toBe(false)
+    expect(all<{ said: string | null }>(d.db, 'SELECT said FROM call_turns WHERE call_id = ?', call.id).every(t => t.said === null)).toBe(true)
+    const kept = all<{ outcome: string | null }>(d.db, 'SELECT outcome FROM call_turns WHERE call_id = ?', call.id)
+    expect(kept.length).toBeGreaterThan(0) // timings/outcomes stay
+  })
+  it('a failed delete is retried every sweep until it lands', async () => {
+    const { d, call } = await ended()
+    d.failDelete.on = true
+    await postCallSweep(d)
+    expect(getCall(d.db, call.id)).toMatchObject({ el_deleted_at: null })
+    expect(getCall(d.db, call.id)!.finalized_at).toBeTruthy()
+    d.failDelete.on = false
+    expect(await postCallSweep(d)).toContain(call.id)
+    expect(getCall(d.db, call.id)!.el_deleted_at).toBeTruthy()
+    expect(d.deleted).toEqual(['conv_test1'])
+  })
+  it('unanswered: deleted without fetching anything', async () => {
+    const s = await start(PETE)
+    applyTwilioStatus(s.d.db, s.call.id, { CallSid: 'CAtest1', CallStatus: 'no-answer' })
+    s.d.elevenlabs.getConversation = async () => { throw new Error('should not fetch') }
+    await postCallSweep(s.d)
+    expect(getCall(s.d.db, s.call.id)!.el_deleted_at).toBeTruthy()
+    expect(s.d.deleted).toEqual(['conv_test1'])
+  })
+  it('PERSONAL_RETENTION_HOURS delays the scrub; a pending call.end notice holds it', async () => {
+    const late = await ended({ PERSONAL_RETENTION_HOURS: '1' })
+    await postCallSweep(late.d)
+    expect(getCall(late.d.db, late.call.id)).toMatchObject({ scrubbed_at: null, purpose: 'test' })
+    expect(late.d.deleted).toEqual(['conv_test1']) // the delete never waits
+    const held = await ended()
+    enqueueJob(held.d.db, held.call.id, 'call.end', { notes: ['n'] }, 60_000)
+    await postCallSweep(held.d)
+    expect(getCall(held.d.db, held.call.id)!.scrubbed_at).toBeNull()
+    run(held.d.db, "UPDATE brain_jobs SET status = 'done', result = '{}' WHERE call_id = ?", held.call.id)
+    await postCallSweep(held.d)
+    expect(getCall(held.d.db, held.call.id)!.scrubbed_at).toBeTruthy()
+    expect(all<{ payload: string }>(held.d.db, 'SELECT payload FROM brain_jobs WHERE call_id = ?', held.call.id).map(j => j.payload)).toEqual(['{}'])
+  })
+  it('the read API shows metadata only, even before the scrub', async () => {
+    const { d, call } = await ended({ PERSONAL_RETENTION_HOURS: '1' })
+    run(d.db, "UPDATE calls SET notes = '[\"n\"]', summary = 'x', transcript = '[]' WHERE id = ?", call.id)
+    const auth = { authorization: `Bearer ${createKey(d.db, 'jasmine', 'read').key}` }
+    const one = (await app!.inject({ url: `/phone/api/calls/${call.id}`, headers: auth })).json()
+    expect(one).toMatchObject({ private: true, scrubbed: false, purpose: null, summary: null, summary_title: null, transcript: null, notes: [] })
+    await postCallSweep(d)
+    const list = (await app!.inject({ url: '/phone/api/calls', headers: auth })).json()
+    expect(list.calls[0]).toMatchObject({ private: true, el_deleted: true, purpose: null })
+  })
+  it('calls to other numbers stay on the main agent', async () => {
+    const s = await start(PETE)
+    expect((s.d.registered[0] as { agentId?: string }).agentId).toBe('agent_pete')
+    const e = setup({ ...LIVE_ENV, ...PETE, PERSONAL_OK_NUMBERS: '+14350000000' })
+    const c = await placeCall(e, 'jasmine', { to: '+14358403707', purpose: 'test', brief: 'hi', dry_run: false })
+    expect(getCall(e.db, c.id)).toMatchObject({ private: 0, el_agent_id: 'agent_x' })
+    expect((e.registered[0] as { agentId?: string }).agentId).toBe('agent_x')
+  })
 })
