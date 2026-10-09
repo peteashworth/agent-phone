@@ -6,14 +6,14 @@ import { randomBytes } from 'node:crypto'
 import { type Deps, type CallRow, getCall, hangup, LIVE_STATUSES } from '../calls.ts'
 import { safeEqual } from '../auth.ts'
 import { all, audit, run } from '../db.ts'
-import { setDoNotCall } from '../contacts.ts'
+import { setDoNotCall, getContact } from '../contacts.ts'
 import { detectHardStop, CLOSE_LINES } from '../voice/hardStops.ts'
 import { OutputFilter } from '../voice/outputFilter.ts'
 import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '../voice/brain.ts'
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine, alreadySaid, takeContinuation } from '../voice/brainTurn.ts'
 import type { FilterOptions } from '../voice/outputFilter.ts'
 import { awaitHuman, applyGreeting, isMachine } from '../postcall.ts'
-import { DISCLOSURE } from '../voice/lines.ts'
+import { openerFor } from '../voice/lines.ts'
 import { effective } from '../settings.ts'
 
 type Body = { model?: string; messages?: ChatMessage[]; stream?: boolean }
@@ -47,17 +47,28 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
 
   // Settle: the newest request per call. One waiting request is superseded when a newer one arrives or ElevenLabs drops it.
   const latest = new Map<string, number>()
+  const lastAt = new Map<string, number>() // when each call's previous request arrived
   let reqSeq = 0
-  /** Wait SETTLE_MS; true if this is still the call's newest request and its connection is open. */
-  const settle = async (callId: string, res: FastifyReply['raw']): Promise<boolean> => {
+  /**
+   * Wait SETTLE_MS, or SETTLE_BURST_MS when the call's previous request came less than SETTLE_BURST_WINDOW_MS ago (the
+   * callee is mid-sentence and ElevenLabs keeps cutting it into pieces). True if this is still the call's newest
+   * request and its connection is open.
+   */
+  const settle = async (callId: string, res: FastifyReply['raw'], log: FastifyInstance['log']): Promise<boolean> => {
     if (!c.SETTLE_MS) return true
+    const at = Date.now(), prev = lastAt.get(callId)
+    lastAt.set(callId, at)
+    for (const [id, t] of lastAt) if (at - t > 60_000) lastAt.delete(id)
+    const burst = prev !== undefined && at - prev < c.SETTLE_BURST_WINDOW_MS
+    const wait = burst ? Math.max(c.SETTLE_MS, c.SETTLE_BURST_MS) : c.SETTLE_MS
+    if (burst) log.info({ call: callId, gapMs: at - prev, wait }, 'burst settle')
     const mine = ++reqSeq
     latest.set(callId, mine)
     let dropped = false
     await new Promise<void>(resolve => {
       const done = () => { clearTimeout(t); res.off('close', onClose); resolve() }
       const onClose = () => { dropped = true; done() }
-      const t = setTimeout(done, c.SETTLE_MS)
+      const t = setTimeout(done, wait)
       res.once('close', onClose)
     })
     const current = latest.get(callId) === mine
@@ -129,8 +140,9 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         source = (async function* () { if (line) yield line })()
       } else if (opening) {
         if (now) log = new TurnLog(d, now, kind, 'disclosure')
-        source = (async function* () { yield DISCLOSURE })()
-      } else if (now && kind === 'jasmine' && !(await settle(now.id, reply.raw))) {
+        const line = openerFor(now ? getContact(db, now.to_e164) : null) // known contacts: first-name opener, still "being recorded"
+        source = (async function* () { yield line })()
+      } else if (now && kind === 'jasmine' && !(await settle(now.id, reply.raw, req.log))) {
         // A newer request for this call arrived (or this one was dropped) while settling: no turn, nothing said.
         req.log.info({ call: now.id }, 'superseded while settling')
         source = (async function* () {})()

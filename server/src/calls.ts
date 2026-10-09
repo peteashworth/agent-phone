@@ -11,7 +11,7 @@ import type { TwilioClient } from './voice/twilio.ts'
 import type { Brain } from './voice/brain.ts'
 import { loadFacts, pickFacts, factsFor } from './facts.ts'
 import { brainOnline, enqueueJob, awaitJob, cancelJob } from './brainJobs.ts'
-import { DISCLOSURE } from './voice/lines.ts'
+import { openerFor } from './voice/lines.ts'
 
 export type Deps = { config: Config; db: DB; elevenlabs: ElevenLabsClient; twilio: TwilioClient; clock?: () => Date; brain?: Brain }
 
@@ -163,14 +163,14 @@ export const warming = new Map<string, Promise<void>>()
 
 /** What the phone session gets before the call: everything public, nothing from brief_personal or code facts. */
 export function callStartPayload(d: Deps, call: CallRow) {
-  const contact = one<{ name: string | null; trusted: number }>(d.db, 'SELECT name, trusted FROM contacts WHERE e164 = ?', call.to_e164)
+  const contact = one<{ name: string | null; trusted: number; known: number }>(d.db, 'SELECT name, trusted, known FROM contacts WHERE e164 = ?', call.to_e164)
   const picked = call.facts ? pickFacts(loadFacts(d.config), JSON.parse(call.facts) as string[]).picked : []
   return {
     callee: { name: contact?.name ?? null, relationship: contact ? (contact.trusted ? 'trusted' : 'contact') : 'unknown' },
     from_label: call.from_label, purpose: call.purpose, brief: call.brief, plan: call.plan,
     facts: factsFor(picked, 'anyone'),
     has_brief_personal: !!call.has_brief_personal,
-    disclosure: DISCLOSURE,
+    disclosure: openerFor(contact), // what the callee heard first
     rules: { max_seconds: call.max_seconds, tier: 'public', style: 'spoken prose, 1-3 sentences, no markdown/emoji/URLs' },
   }
 }

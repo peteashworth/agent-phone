@@ -2,6 +2,20 @@
 
 export const DISCLOSURE = "Hi, this is Jasmine, Pete's AI assistant. This call is being recorded."
 
+/**
+ * The opener for this callee. Contacts Pete marked known (admin/CLI only) get a shorter one with their first name;
+ * everyone else gets DISCLOSURE. The name is the first word of the contact name, letters only, so an odd name can't
+ * put other words in Jasmine's mouth. Every opener must say the call is recorded, or DISCLOSURE is used instead.
+ */
+export function openerFor(contact?: { name?: string | null; known?: number | boolean | null } | null): string {
+  if (!contact?.known) return DISCLOSURE
+  const first = (contact.name ?? '').trim().split(/\s+/)[0] ?? ''
+  if (!/^\p{L}[\p{L}'’-]{0,29}$/u.test(first)) return DISCLOSURE
+  return withRecordingNotice(`Hi ${first}, it's Jasmine, Pete's assistant. This call's being recorded.`)
+}
+/** The guard: an opener without the recording notice is never spoken. */
+export const withRecordingNotice = (line: string) => /\bbeing recorded\b/i.test(line) ? line : DISCLOSURE
+
 // Slow BRAIN=jasmine turns (docs/milestone-d-brain.md §4-§5). Trailing space: each is a whole sentence the output
 // filter can release at once.
 export const FILLER_LINES = ['One moment. ', 'Let me check. ', 'Mm, let me see. ', 'Just a second. ', 'Hang on, one sec. ']

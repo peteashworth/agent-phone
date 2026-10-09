@@ -129,6 +129,9 @@ logged, tested and consistent.
   speculative_turn on and off). A jasmine turn waits `SETTLE_MS` (250) for a newer request on the same call before it
   goes to the host; a superseded request is answered empty and leaves no turn row. Settle time is not in the turn
   timings (the row starts after it). `SETTLE_MS=0` turns it off.
+  Adaptive (Oct 8, after the Carolee call: pieces ~420ms apart each got through 250ms): a request that arrives within
+  `SETTLE_BURST_WINDOW_MS` (1500) of the call's previous one waits `SETTLE_BURST_MS` (600) instead. A lone first
+  request still waits 250ms. Logged as `burst settle` with the gap.
 
 ## 6. Order of checks per turn (all on the droplet, before Jasmine sees anything)
 

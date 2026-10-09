@@ -3,7 +3,7 @@ import { toE164 } from './phone.ts'
 import { MAX_ALLOWED } from './settings.ts'
 
 export type Contact = {
-  e164: string; name: string; trusted: number; do_not_call: number; inbound_allowed: number; allowed: number
+  e164: string; name: string; trusted: number; do_not_call: number; inbound_allowed: number; allowed: number; known: number
   notes: string; tz: string | null; created_at: string; updated_at: string
 }
 export type ContactPatch = {
@@ -65,8 +65,8 @@ export function setDoNotCall(db: DB, actor: string, phone: string, reason: strin
   audit(db, actor, 'contact.do_not_call', e164, { reason })
 }
 
-export type AdminContactPatch = { name?: string; notes?: string; tz?: string | null; allowed?: boolean; trusted?: boolean; inbound_allowed?: boolean; do_not_call?: true }
-const ADMIN_FIELDS = ['name', 'notes', 'tz', 'allowed', 'trusted', 'inbound_allowed', 'do_not_call'] as const
+export type AdminContactPatch = { name?: string; notes?: string; tz?: string | null; allowed?: boolean; trusted?: boolean; inbound_allowed?: boolean; known?: boolean; do_not_call?: true }
+const ADMIN_FIELDS = ['name', 'notes', 'tz', 'allowed', 'trusted', 'inbound_allowed', 'known', 'do_not_call'] as const
 
 /**
  * Pete's edits from the dashboard (admin key). Adds the contact if it's new (name required). Enforces the allowlist

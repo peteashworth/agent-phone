@@ -17,11 +17,12 @@ const contactBody = z.object({
   allowed: z.boolean().optional(),
   trusted: z.boolean().optional(),
   inbound_allowed: z.boolean().optional(),
+  known: z.boolean().optional(), // shorter first-name opener (still says the call is recorded)
   do_not_call: z.literal(true).optional(), // clearing it is CLI-only
 }).strict()
 
 const view = (c: Contact) => ({
-  phone: c.e164, name: c.name, tz: c.tz, notes: c.notes, allowed: !!c.allowed, trusted: !!c.trusted,
+  phone: c.e164, name: c.name, tz: c.tz, notes: c.notes, allowed: !!c.allowed, trusted: !!c.trusted, known: !!c.known,
   inbound_allowed: !!c.inbound_allowed, do_not_call: !!c.do_not_call, updated_at: c.updated_at,
 })
 

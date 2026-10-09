@@ -33,7 +33,7 @@ const USAGE = `usage: node src/cli.ts <command>
   brain:status                    is the host adapter polling? jobs waiting?
   key:list
   key:revoke <prefix>
-  contact:set <phone> <field> <0|1>             field: allowed | trusted | do_not_call | inbound_allowed
+  contact:set <phone> <field> <0|1>             field: allowed | trusted | known | do_not_call | inbound_allowed
   contact:add <phone> <name>                    new contact (not allowed, not trusted)
   contacts                        list contacts
   contact:tz <phone> <IANA zone|none>           e.g. America/Denver; none = unknown (window must fit both US coasts)
@@ -69,9 +69,9 @@ async function main(argv: string[]) {
     case 'key:revoke': console.log(revokeKey(db, args[0] ?? '') ? 'revoked' : 'no active key with that prefix'); break
     case 'contact:set': {
       const [phone, field, v] = args
-      if (!phone || !['allowed', 'trusted', 'do_not_call', 'inbound_allowed'].includes(field) || !['0', '1'].includes(v)) throw new Error(USAGE)
-      // allowed goes through the admin path for the 25-contact ceiling and the field-level audit line.
-      console.log(field === 'allowed' ? adminSetContact(db, 'cli', phone, { allowed: v === '1' })
+      if (!phone || !['allowed', 'trusted', 'known', 'do_not_call', 'inbound_allowed'].includes(field) || !['0', '1'].includes(v)) throw new Error(USAGE)
+      // allowed and known go through the admin path (25-contact ceiling, field-level audit line).
+      console.log(field === 'allowed' || field === 'known' ? adminSetContact(db, 'cli', phone, { [field]: v === '1' })
         : updateContact(db, 'cli', phone, { [field]: v === '1' })); break
     }
     case 'contact:add': {
@@ -79,7 +79,7 @@ async function main(argv: string[]) {
       if (!phone || !name.length) throw new Error(USAGE)
       console.log(adminSetContact(db, 'cli', phone, { name: name.join(' ') })); break
     }
-    case 'contacts': console.table(all(db, 'SELECT e164, name, allowed, trusted, do_not_call, inbound_allowed, tz FROM contacts ORDER BY name')); break
+    case 'contacts': console.table(all(db, 'SELECT e164, name, allowed, trusted, known, do_not_call, inbound_allowed, tz FROM contacts ORDER BY name')); break
     case 'contact:tz': {
       const [phone, tz] = args
       if (!phone || !tz) throw new Error(USAGE)

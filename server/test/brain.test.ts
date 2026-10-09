@@ -321,6 +321,32 @@ describe('settle (ElevenLabs re-sends every ~150ms mid-speech)', () => {
     expect(spoken((await ask(call.id, 'First thing.', 'Second thing.')).body)).toBe('Two.')
     expect(turnJobs(seen)).toHaveLength(2)
   })
+  it('adaptive: pieces further apart than SETTLE_MS but inside the burst window wait SETTLE_BURST_MS, so only the last goes', async () => {
+    // The Carolee call: pieces ~420ms apart each got through a 250ms settle. Scaled down: 50ms settle, 100ms gaps.
+    const { d, call, seen } = await start({ SETTLE_MS: '50', SETTLE_BURST_MS: '300', SETTLE_BURST_WINDOW_MS: '1500' }, {},
+      [undefined as never, [{ say: 'One.' }, { say: 'Two.' }]])
+    const a = ask(call.id, 'So I was')
+    await sleep(100); const b = ask(call.id, 'So I was thinking')
+    await sleep(100); const c = ask(call.id, 'So I was thinking about Saturday.')
+    const [ra, rb, rc] = await Promise.all([a, b, c])
+    expect(spoken(rb.body)).toBe('') // superseded by c inside its 300ms wait
+    expect(turnJobs(seen).map(j => j.user_text)).toEqual(['So I was', 'So I was thinking about Saturday.']) // a went alone: first of the burst
+    expect([spoken(ra.body), spoken(rc.body)]).toEqual(['One.', 'Two.'])
+    expect(all(d.db, 'SELECT id FROM call_turns WHERE call_id = ?', call.id)).toHaveLength(2)
+  })
+  it('adaptive: a request after a quiet gap longer than the window is a first request again (SETTLE_MS only)', async () => {
+    const { call, seen } = await start({ SETTLE_MS: '30', SETTLE_BURST_MS: '400', SETTLE_BURST_WINDOW_MS: '200' }, {},
+      [undefined as never, [{ say: 'One.' }, { say: 'Two.' }, { say: 'Three.' }]])
+    await ask(call.id, 'First.')
+    await sleep(250)
+    let t0 = Date.now()
+    expect(spoken((await ask(call.id, 'First.', 'Second.')).body)).toBe('Two.')
+    expect(Date.now() - t0).toBeLessThan(400) // not the burst wait
+    t0 = Date.now()
+    expect(spoken((await ask(call.id, 'First.', 'Second.', 'Third.')).body)).toBe('Three.') // straight after: burst
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(400)
+    expect(turnJobs(seen)).toHaveLength(3)
+  })
 })
 
 describe('code phrase', () => {

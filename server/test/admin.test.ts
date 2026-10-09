@@ -64,6 +64,13 @@ describe('admin routes', () => {
     const changes = (await req('GET', '/admin/audit', keys.admin)).json().changes
     expect(changes[0]).toMatchObject({ action: 'admin.contact.set', target: OTHER })
   })
+  it('known: off by default, admin can turn it on, audited', async () => {
+    const { d, keys } = await start()
+    expect((await req('POST', '/admin/contacts', keys.admin, { phone: OTHER, name: 'Carolee Smith' })).json()).toMatchObject({ known: false })
+    expect((await req('PATCH', `/admin/contacts/${OTHER}`, keys.admin, { known: true })).json()).toMatchObject({ known: true })
+    expect(contact(d, OTHER)).toMatchObject({ known: 1 })
+    expect(auditRows(d, 'admin.contact.set').find(x => x.meta.field === 'known')?.meta).toMatchObject({ old: 0, new: 1 })
+  })
 
   it('an allowed contact can now be called; unknown fields and wildcards are refused', async () => {
     const { d, keys } = await start(LIVE_ENV)
@@ -179,13 +186,13 @@ describe('allowlist bootstrap', () => {
 // with every non-admin key and a body full of permission fields, calls every MCP tool with them too, then checks that
 // the allowlist, trust and limits are exactly as seeded. Adding a route or tool that can write them fails this test.
 describe('permission guard', () => {
-  const PERMS = { allowed: true, trusted: true, inbound_allowed: true, do_not_call: false, ...Object.fromEntries(
+  const PERMS = { allowed: true, trusted: true, known: true, inbound_allowed: true, do_not_call: false, ...Object.fromEntries(
     Object.keys(SETTINGS).map(k => [k, k === 'VOICEMAIL_LINE' ? 'pwned' : 600])) }
 
-  it('no MCP tool, agent, read or brain key can write allowed, trusted or settings', async () => {
+  it('no MCP tool, agent, read or brain key can write allowed, trusted, known or settings', async () => {
     const { d, keys } = await start(LIVE_ENV)
     d.db.prepare("INSERT INTO contacts (e164, name) VALUES (?, 'Other')").run(OTHER)
-    const before = all(d.db, 'SELECT e164, allowed, trusted, inbound_allowed, do_not_call FROM contacts ORDER BY e164')
+    const before = all(d.db, 'SELECT e164, allowed, trusted, known, inbound_allowed, do_not_call FROM contacts ORDER BY e164')
     const call = await placeCall(d, 'jasmine', { to: PETE, purpose: 'test', brief: 'hi' })
 
     // 1. Every HTTP route that isn't /admin, every method, every non-admin key.
@@ -206,7 +213,7 @@ describe('permission guard', () => {
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/phone/mcp`), {
       requestInit: { headers: as(keys.agent) } }))
     const tools = (await client.listTools()).tools
-    const forbidden = ['allowed', 'trusted', 'inbound_allowed', ...Object.keys(SETTINGS)]
+    const forbidden = ['allowed', 'trusted', 'known', 'inbound_allowed', ...Object.keys(SETTINGS)]
     for (const t of tools) {
       const props = Object.keys((t.inputSchema as { properties?: object }).properties ?? {})
       expect(props.filter(p => forbidden.includes(p)), t.name).toEqual([])
@@ -225,10 +232,10 @@ describe('permission guard', () => {
 
     // Nothing moved.
     expect(all(d.db, 'SELECT * FROM settings')).toEqual([])
-    expect(all(d.db, 'SELECT e164, allowed, trusted, inbound_allowed, do_not_call FROM contacts WHERE e164 != ? ORDER BY e164', '+14355550100'))
+    expect(all(d.db, 'SELECT e164, allowed, trusted, known, inbound_allowed, do_not_call FROM contacts WHERE e164 != ? ORDER BY e164', '+14355550100'))
       .toEqual(before)
-    expect(one(d.db, "SELECT allowed, trusted, inbound_allowed FROM contacts WHERE e164 = '+14355550100'") ?? { allowed: 0, trusted: 0, inbound_allowed: 0 })
-      .toEqual({ allowed: 0, trusted: 0, inbound_allowed: 0 })
+    expect(one(d.db, "SELECT allowed, trusted, known, inbound_allowed FROM contacts WHERE e164 = '+14355550100'") ?? { allowed: 0, trusted: 0, known: 0, inbound_allowed: 0 })
+      .toEqual({ allowed: 0, trusted: 0, known: 0, inbound_allowed: 0 })
     expect(auditRows(d, 'admin.%')).toEqual([])
     expect(effective(d.config, d.db)).toEqual(d.config)
   })

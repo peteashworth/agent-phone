@@ -77,6 +77,10 @@ const schema = z.object({
   // ElevenLabs re-sends the request every ~150ms while the callee is still talking. A jasmine turn goes to the host
   // only after this long with no newer request for the call; a superseded one is answered empty. 0 = off.
   SETTLE_MS: z.coerce.number().int().min(0).max(2000).default(250),
+  // A request this soon after the call's previous one is part of a burst (the callee is still mid-sentence): it settles
+  // SETTLE_BURST_MS instead (never less than SETTLE_MS).
+  SETTLE_BURST_MS: z.coerce.number().int().min(0).max(3000).default(600),
+  SETTLE_BURST_WINDOW_MS: z.coerce.number().int().min(0).max(10000).default(1500),
   TURN_TIMEOUT_S: z.coerce.number().int().min(3).max(60).default(20),
   // No poll from the host for this long = brain offline (place_call refuses, live turns take the exit line).
   BRAIN_OFFLINE_S: z.coerce.number().int().min(5).max(300).default(30),

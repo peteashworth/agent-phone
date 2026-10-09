@@ -2,7 +2,7 @@
 
 Who can be called and the call limits are managed by Pete from the dashboard Calls page (Contacts / Limits / Changes
 tabs). Nothing an agent can reach can change them: no MCP tool, and no agent, read or brain key. test/admin.test.ts has
-a guard test that fails if any non-admin route or MCP tool can write `allowed`, `trusted`, `inbound_allowed` or a setting.
+a guard test that fails if any non-admin route or MCP tool can write `allowed`, `trusted`, `known`, `inbound_allowed` or a setting.
 
 ## The key
 
@@ -16,7 +16,7 @@ Bearer and keeps nothing. Lost or leaked: `key:revoke <prefix>` (every change in
 | Route | What |
 |---|---|
 | `GET /admin/contacts` | all contacts + `allowed_count`, `max_allowed` (25) |
-| `POST /admin/contacts` `{phone, name, ...}` / `PATCH /admin/contacts/:phone` | add or change: `name notes tz allowed trusted inbound_allowed do_not_call:true` |
+| `POST /admin/contacts` `{phone, name, ...}` / `PATCH /admin/contacts/:phone` | add or change: `name notes tz allowed trusted known inbound_allowed do_not_call:true` |
 | `GET /admin/settings` / `PATCH /admin/settings` `{KEY: value \| null}` | limits; `null` = back to the env value. All or nothing |
 | `GET /admin/audit?limit&before` | the Changes list, newest first |
 | `GET /admin/whoami` | checks a pasted key |
@@ -25,6 +25,10 @@ Bearer and keeps nothing. Lost or leaked: `key:revoke <prefix>` (every change in
 
 - **Allowed** = may be dialed at all. **Trusted** = dialed without Pete's confirm step. Both admin-only.
 - At most 25 allowed contacts (code constant). No wildcards anywhere.
+- `known` (default off): the call opens with "Hi {first name}, it's Jasmine, Pete's assistant. This call's being
+  recorded." instead of the full disclosure. The first name is the first word of the contact name, letters only (else
+  the full disclosure). An opener without "being recorded" is never used (`withRecordingNotice`, pinned by a test).
+  Admin/CLI only (`contact:set <phone> known 1`), audited like the other fields.
 - Do-not-call can be **set** from the dashboard; **clearing** it is CLI-only: `contact:set <phone> do_not_call 0`.
 - `DIALING_ENABLED` (the kill switch), secrets, CODE_PHRASE, voicemail action, cost rates and all timing stay env-only.
 - Settings and their hard bounds (a save outside them is refused):
