@@ -9,9 +9,8 @@ import { nextJob, unclaim, submitResult, markPoll, jobView } from '../brainJobs.
 
 export const resultSchema = z.object({
   ready: z.boolean().optional(),                    // call.start
-  say: z.string().max(4000).optional(),             // turn (may also carry [[end_call]] / [[ask_code]] / [[note: …]] tags)
+  say: z.string().max(4000).optional(),             // turn (may also carry [[end_call]] / [[note: …]] tags)
   end_call: z.boolean().optional(),
-  ask_code: z.boolean().optional(),
   note_for_jasmine: z.string().max(1000).nullable().optional(),
   error: z.string().max(500).optional(),            // the host couldn't answer (busy, session down): retried once
 })

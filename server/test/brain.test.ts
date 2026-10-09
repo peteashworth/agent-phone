@@ -2,11 +2,11 @@ import { describe, it, expect, afterEach } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp } from '../src/app.ts'
 import { createKey } from '../src/auth.ts'
-import { placeCall, getCall, warming, CallRefused } from '../src/calls.ts'
+import { placeCall, getCall, warming, CallRefused, callEvents } from '../src/calls.ts'
 import { claimNext, submitResult, markPoll, getJob, enqueueJob, type JobRow } from '../src/brainJobs.ts'
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, onlyFiller } from '../src/voice/brainTurn.ts'
-import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, CODE_ATTEMPT_PLACEHOLDER, NOTICE_LINE, pickFiller } from '../src/voice/lines.ts'
-import { findPhrase, removePhrase } from '../src/voice/codePhrase.ts'
+import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, NOTICE_LINE, pickFiller } from '../src/voice/lines.ts'
+import { findPhrase, nearMiss, removePhrase } from '../src/voice/codePhrase.ts'
 import { isQuestion, isGoodbye } from '../src/voice/question.ts'
 import { OutputFilter } from '../src/voice/outputFilter.ts'
 import { redact } from '../src/postcall.ts'
@@ -352,15 +352,28 @@ describe('settle (ElevenLabs re-sends every ~150ms mid-speech)', () => {
 
 describe('code phrase', () => {
   it('matches loosely, removes cleanly', () => {
-    expect(findPhrase('um it is Purple, otter... river lamp!', PHRASE)).not.toBeNull()
+    for (const t of ['um it is Purple, otter... river lamp!', 'purple otters river lamps', 'purpel otter rivers lamp',
+      'purple otter, um, the river lamp', 'purple otter riverlamp', 'Purple Otter River Lamp.'])
+      expect(findPhrase(t, PHRASE), t).not.toBeNull()
     expect(findPhrase('purple otter lamp river', PHRASE)).toBeNull()
+    expect(findPhrase('purple otter river', PHRASE)).toBeNull() // short phrases lose no word
     expect(removePhrase('sure, purple otter river lamp okay', PHRASE)).toEqual({ found: true, text: 'sure, okay' })
+    const LONG = 'seven blue horses dance slowly'
+    expect(findPhrase('7 blew horse dancing slowly', LONG)).not.toBeNull()
+    expect(findPhrase('seven blue horses slowly', LONG)).not.toBeNull() // 5+ words: one may go missing
+    expect(findPhrase('seven horses slowly', LONG)).toBeNull()
+  })
+  it('near-miss: most of the weighty words in order, never ordinary talk', () => {
+    for (const t of ['purple otter lamp river', 'purple otter river', 'uh purple otter something lamp'])
+      expect(nearMiss(t, PHRASE), t).toBe(true)
+    for (const t of ['the purple thing by the river', 'I went to the river with a lamp', 'hello how are you',
+      'purple otter river lamp'])
+      expect(nearMiss(t, PHRASE), t).toBe(false)
   })
   it('verified: phrase cut out, personal tier, brief_personal goes out once', async () => {
     const { d, call, seen } = await start({}, { brief_personal: 'the private bit' },
-      [undefined as never, [{ say: 'What is the code phrase? [[ask_code]]' }, { say: 'Thanks.' }, { say: 'Next.' }]])
+      [undefined as never, [{ say: 'Hi.' }, { say: 'Thanks.' }, { say: 'Next.' }]])
     await ask(call.id, 'hi')
-    expect(getCall(d.db, call.id)!.code_asked).toBe(1)
     await ask(call.id, 'hi', 'it is purple otter river lamp')
     await ask(call.id, 'hi', 'it is purple otter river lamp', 'what now')
     const turns = seen.filter(j => j.type === 'turn').map(j => JSON.parse(j.payload))
@@ -371,21 +384,37 @@ describe('code phrase', () => {
     const t = redact(d, call.id, [{ role: 'user', text: 'it is purple otter river lamp', time_in_call_secs: 1 }] as never)
     expect(t[0].text).not.toContain('otter')
   })
-  it('a wrong attempt is withheld and counted; lockout after the limit', async () => {
-    const asks = () => ({ say: 'Code phrase? [[ask_code]]' })
-    const { d, call, seen } = await start({ CODE_PHRASE_MAX_ATTEMPTS: '1' }, {}, [undefined as never, [asks(), asks(), { say: 'ok' }]])
+  it('a near-miss is ordinary speech to the brain, counted silently; lockout after the limit', async () => {
+    const { d, call, seen } = await start({ CODE_PHRASE_MAX_ATTEMPTS: '2' }, {},
+      [undefined as never, [{ say: 'a' }, { say: 'b' }, { say: 'c' }, { say: 'd' }, { say: 'e' }]])
     await ask(call.id, 'hi')
-    await ask(call.id, 'hi', 'blue fox sea')
-    const turns = seen.filter(j => j.type === 'turn').map(j => JSON.parse(j.payload))
-    expect(turns[1]).toMatchObject({ code_phrase: 'incorrect', user_text: CODE_ATTEMPT_PLACEHOLDER, code_locked: true })
-    expect(redact(d, call.id, [{ role: 'user', text: 'blue fox sea', time_in_call_secs: 1 }] as never)[0].text).toBe('[code phrase attempt removed]')
-    await ask(call.id, 'hi', 'blue fox sea', 'purple otter river lamp')
+    await ask(call.id, 'hi', 'purple otter lamp river')
+    let turns = seen.filter(j => j.type === 'turn').map(j => JSON.parse(j.payload))
+    expect(turns[1]).toMatchObject({ code_phrase: null, tier: 'public', user_text: 'purple otter lamp river' })
+    expect(JSON.stringify(turns[1])).not.toMatch(/near|attempt|lock/)
+    expect(getCall(d.db, call.id)!.code_attempts).toBe(1)
+    const ev = callEvents(d.db, call.id).filter(e => e.type === 'code_near_miss')
+    expect(ev).toHaveLength(1)
+    expect(JSON.stringify(ev)).not.toContain('otter')
+    await ask(call.id, 'hi', 'purple otter lamp river', 'the weather is nice') // ordinary talk: not an attempt
+    expect(getCall(d.db, call.id)!.code_attempts).toBe(1)
+    await ask(call.id, 'hi', 'purple otter lamp river', 'the weather is nice', 'otter river lamp purple')
+    expect(getCall(d.db, call.id)!.code_attempts).toBe(2)
+    await ask(call.id, 'hi', 'purple otter lamp river', 'the weather is nice', 'otter river lamp purple', 'purple otter river lamp')
     expect(getCall(d.db, call.id)!.tier).toBe('public') // locked: even the right phrase no longer unlocks
+    turns = seen.filter(j => j.type === 'turn').map(j => JSON.parse(j.payload))
+    expect(turns.at(-1)).toMatchObject({ code_phrase: null, user_text: '' }) // ...but its words are still cut out
   })
-  it('never unlocks for a callee outside PERSONAL_OK_NUMBERS', async () => {
+  it('an old [[ask_code]] tag is dropped unspoken and changes nothing', async () => {
+    const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Sure. [[ask_code]]' }]])
+    expect(spoken((await ask(call.id, 'hi')).body)).toBe('Sure.')
+    expect(getCall(d.db, call.id)!.code_attempts).toBe(0)
+  })
+  it('never unlocks for a callee outside PERSONAL_OK_NUMBERS, and counts nothing', async () => {
     const { d, call } = await start({ PERSONAL_OK_NUMBERS: '+14350000000' })
-    await ask(call.id, 'purple otter river lamp')
-    expect(getCall(d.db, call.id)!.tier).toBe('public')
+    await ask(call.id, 'purple otter lamp river')
+    await ask(call.id, 'purple otter lamp river', 'purple otter river lamp')
+    expect(getCall(d.db, call.id)!).toMatchObject({ tier: 'public', code_attempts: 0 })
   })
 })
 

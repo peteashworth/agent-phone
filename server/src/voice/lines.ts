@@ -36,8 +36,5 @@ export function pickFiller(lastIdx: number, rand = Math.random): number {
 export const FILLER2_LINE = 'Still with you, just a second. '
 export const EXIT_LINE = "I'm sorry, I'm having trouble on my end. Pete will follow up with you. Goodbye."
 
-/** Stands in for a code-phrase attempt in what the brain sees: the words themselves never leave the droplet. */
-export const CODE_ATTEMPT_PLACEHOLDER = '[code phrase attempt, words withheld]'
-
 /** Roughly how long a line takes to say, so a hangup after it doesn't cut it off. */
 export const speakMs = (text: string, floorMs: number) => Math.max(floorMs, 1000 + text.split(/\s+/).filter(Boolean).length * 400)

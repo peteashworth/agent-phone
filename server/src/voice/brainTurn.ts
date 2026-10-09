@@ -8,8 +8,8 @@ import { brainOnline, enqueueJob, awaitJob, cancelJob, getJob, type JobRow } fro
 import { loadFacts, pickFacts, factsFor, filterFacts, type Fact } from '../facts.ts'
 import type { FilterOptions } from './outputFilter.ts'
 import { type ChatMessage, textOf } from './brain.ts'
-import { findPhrase, removePhrase } from './codePhrase.ts'
-import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, NOTICE_LINE, pickFiller, CODE_ATTEMPT_PLACEHOLDER, speakMs } from './lines.ts'
+import { findPhrase, nearMiss, removePhrase } from './codePhrase.ts'
+import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, NOTICE_LINE, pickFiller, speakMs } from './lines.ts'
 import { isQuestion, isGoodbye } from './question.ts'
 
 export const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
@@ -149,7 +149,8 @@ export function filterOptions(d: Deps, call: CallRow): FilterOptions {
 
 /**
  * §7 code phrase, then the turn payload. Synchronous so the tier is settled before the output filter is built.
- * The phrase is never stored, logged or sent: an attempt's words are replaced, a match is cut out.
+ * The phrase is never stored, logged or sent: a match is cut out. Nothing ever asks for it or hints that it exists:
+ * a near-miss goes to the brain as ordinary speech, and only counts as an attempt (silent lock after the limit).
  */
 export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage[], log: TurnLog, cont: Continuation | null = null): Prepared {
   const { config: c, db } = d
@@ -167,35 +168,33 @@ export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage
   const norm = (t: string) => t.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim()
   fresh = fresh.filter((t, i) => !(i + 1 < fresh.length && norm(t) && norm(fresh[i + 1]).startsWith(norm(t))))
   let userText = fresh.join(' ').trim()
-  let codePhrase: 'verified' | 'incorrect' | null = null
-  let locked = false
+  let codePhrase: 'verified' | null = null
   const phrase = c.CODE_PHRASE
 
+  const okNumber = c.PERSONAL_OK_NUMBERS.includes(call.to_e164)
   const hit = phrase ? fresh.filter(t => findPhrase(t, phrase)) : []
   if (hit.length) {
     log.redact.push(...hit.map(sha256))
     userText = fresh.map(t => removePhrase(t, phrase!).text).join(' ').trim()
-    const canUnlock = c.PERSONAL_OK_NUMBERS.includes(call.to_e164) && call.code_attempts < c.CODE_PHRASE_MAX_ATTEMPTS
+    const canUnlock = okNumber && call.code_attempts < c.CODE_PHRASE_MAX_ATTEMPTS
     if (call.tier !== 'personal' && canUnlock) {
-      run(db, "UPDATE calls SET tier = 'personal', code_asked = 0 WHERE id = ?", call.id)
+      run(db, "UPDATE calls SET tier = 'personal' WHERE id = ?", call.id)
       codePhrase = 'verified'
       event(db, call.id, 'server', 'code_phrase', { result: 'verified' })
       audit(db, 'system', 'call.code_phrase', call.id, { result: 'verified' })
     } else if (call.tier !== 'personal') {
-      const why = c.PERSONAL_OK_NUMBERS.includes(call.to_e164) ? 'code_phrase_locked' : 'code_phrase_wrong_callee'
+      const why = okNumber ? 'code_phrase_locked' : 'code_phrase_wrong_callee'
       event(db, call.id, 'server', why, {})
       audit(db, 'system', 'call.' + why, call.id)
     }
-  } else if (call.code_asked && call.tier !== 'personal') {
-    // The brain asked; this turn was the attempt and it missed. Its words may be a near-miss of the phrase: withheld.
-    log.redact.push(...fresh.map(sha256))
-    userText = CODE_ATTEMPT_PLACEHOLDER
+  } else if (phrase && okNumber && call.tier !== 'personal' && call.code_attempts < c.CODE_PHRASE_MAX_ATTEMPTS
+    && fresh.some(t => nearMiss(t, phrase))) {
+    // Close but no match: the words go to the brain as they are, the attempt is counted, nothing is said about it.
     const attempts = call.code_attempts + 1
-    run(db, 'UPDATE calls SET code_asked = 0, code_attempts = ? WHERE id = ?', attempts, call.id)
-    codePhrase = 'incorrect'
-    locked = attempts >= c.CODE_PHRASE_MAX_ATTEMPTS
-    event(db, call.id, 'server', 'code_phrase', { result: 'incorrect', attempts, locked })
-    audit(db, 'system', 'call.code_phrase', call.id, { result: 'incorrect', attempts, locked })
+    const locked = attempts >= c.CODE_PHRASE_MAX_ATTEMPTS
+    run(db, 'UPDATE calls SET code_attempts = ? WHERE id = ?', attempts, call.id)
+    event(db, call.id, 'server', 'code_near_miss', { attempts, locked })
+    audit(db, 'system', 'call.code_near_miss', call.id, { attempts, locked })
   }
 
   const now = getCall(db, call.id)!
@@ -210,7 +209,7 @@ export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage
     : prev?.said && (prev.outcome === 'barge_in' || (lastAgent && lastAgent.length < prev.said.trim().length - 2))
       ? { spoken: lastAgent || null } : null
 
-  const question = userText !== CODE_ATTEMPT_PLACEHOLDER && isQuestion(userText)
+  const question = isQuestion(userText)
 
   const seq = now.brain_seq + 1
   run(db, 'UPDATE calls SET brain_seq = ? WHERE id = ?', seq, call.id)
@@ -219,7 +218,6 @@ export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage
     payload: {
       tier: now.tier, user_text: userText, last_user_is_question: question, interrupted, code_phrase: codePhrase,
       ...(codePhrase === 'verified' ? { brief_personal: now.brief_personal, facts: factsFor(picked, 'code') } : {}),
-      ...(locked ? { code_locked: true } : {}),
       // The host picked the job this one replaces: its answer to that one was never spoken.
       ...(cont?.seq != null ? { continues: cont.seq } : {}),
     },
@@ -228,18 +226,17 @@ export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage
 
 // ---------------------------------------------------------------- the turn itself
 
-type Answer = { say: string; end_call: boolean; ask_code: boolean; note: string | null }
+type Answer = { say: string; end_call: boolean; note: string | null }
 
-/** The host's result; [[end_call]] / [[ask_code]] / [[note: …]] tag lines in `say` are honoured too. */
+/** The host's result; [[end_call]] / [[note: …]] tag lines in `say` are honoured too. Any other [[tag]] is dropped unspoken. */
 export function parseAnswer(raw: string | null): Answer {
-  const r = JSON.parse(raw ?? '{}') as { say?: string; end_call?: boolean; ask_code?: boolean; note_for_jasmine?: string | null }
+  const r = JSON.parse(raw ?? '{}') as { say?: string; end_call?: boolean; note_for_jasmine?: string | null }
   let say = r.say ?? '', note = r.note_for_jasmine ?? null
   const end = !!r.end_call || /\[\[\s*end_call\s*\]\]/i.test(say)
-  const ask = !!r.ask_code || /\[\[\s*ask_code\s*\]\]/i.test(say)
   const tagNote = say.match(/\[\[\s*note:\s*([^\]]*)\]\]/i)?.[1]?.trim()
   if (!note && tagNote) note = tagNote
   say = say.replace(/\[\[[^\]]*\]\]/g, ' ').replace(/\s+/g, ' ').trim()
-  return { say, end_call: end, ask_code: ask, note }
+  return { say, end_call: end, note }
 }
 
 /** What to say for a turn on a call that's already being hung up (not a hard stop; that's handled before). */
@@ -302,7 +299,6 @@ export async function* runJasmineTurn(d: Deps, p: Prepared, log: TurnLog, signal
         const notes = JSON.parse(getCall(db, id)!.notes ?? '[]') as string[]
         run(db, 'UPDATE calls SET notes = ? WHERE id = ?', JSON.stringify([...notes, a.note.slice(0, 1000)]), id)
       }
-      if (a.ask_code && getCall(db, id)!.tier !== 'personal') run(db, 'UPDATE calls SET code_asked = 1 WHERE id = ?', id)
       if (a.say) yield a.say
       if (a.end_call && p.keepOpen) {
         // Never hang up on an open question: the line is said, the call stays up, the brain gets the next turn.
