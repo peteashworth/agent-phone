@@ -4,9 +4,13 @@
 //   normal   ElevenLabs default (revert)
 //   eager    responds sooner
 // The API has no millisecond silence threshold; this enum is the only knob besides turn_model.
-// usage: node elevenlabs/turn-eagerness.mjs patient|normal|eager [--dry]      (needs xi-api-key; OneCLI injects it)
+// --speculative on|off  also sets turn.speculative_turn. On, ElevenLabs re-sends the LLM request ~every 150ms while the
+//            callee is still talking (call_ETdA_LdKkwZV: 3 bursts, each cancelling the last), so we run it OFF (Oct 8).
+// usage: node elevenlabs/turn-eagerness.mjs patient|normal|eager [--speculative on|off] [--dry]   (needs xi-api-key; OneCLI injects it)
 const AGENT = 'agent_2601m4ej7de7fjbtgxag3c0n7yv9'
 const MODE = process.argv[2], DRY = process.argv.includes('--dry')
+const SPEC = process.argv.includes('--speculative') ? process.argv[process.argv.indexOf('--speculative') + 1] : undefined
+if (SPEC !== undefined && !['on', 'off'].includes(SPEC)) throw new Error('--speculative on|off')
 if (!['patient', 'normal', 'eager'].includes(MODE)) throw new Error('usage: turn-eagerness.mjs patient|normal|eager [--dry]')
 const H = { 'xi-api-key': process.env.ELEVENLABS_API_KEY ?? 'placeholder', 'content-type': 'application/json' }
 const el = async (m, p, b) => {
@@ -20,7 +24,7 @@ const show = a => JSON.stringify({ turn: a.conversation_config.turn, first_messa
 
 const before = await el('GET', `/v1/convai/agents/${AGENT}`)
 console.log('before:', show(before))
-const patch = { conversation_config: { turn: { turn_eagerness: MODE } } }
+const patch = { conversation_config: { turn: { turn_eagerness: MODE, ...(SPEC ? { speculative_turn: SPEC === 'on' } : {}) } } }
 if (DRY) { console.log('dry run, would PATCH', JSON.stringify(patch)); process.exit(0) }
 await el('PATCH', `/v1/convai/agents/${AGENT}`, patch)
 console.log('after: ', show(await el('GET', `/v1/convai/agents/${AGENT}`)))

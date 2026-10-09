@@ -24,4 +24,4 @@ prompt and settings; changes are applied with PATCH /v1/convai/agents/{id} and c
 
 `node elevenlabs/turn-eagerness.mjs patient|normal|eager` sets `turn.turn_eagerness` on the production agent and
 prints it before and after. Since Oct 8 it is **patient**: on "normal", ~0.9s pauses split one sentence into several
-turns. Revert with `normal`. There is no millisecond silence setting in the API. `speculative_turn` stays on.
+turns. Revert with `normal`. There is no millisecond silence setting in the API. `speculative_turn` is OFF (`--speculative off`, Oct 8): on, it re-sent the request ~every 150ms while the callee talked (call_ETdA_LdKkwZV). Revert with `--speculative on`.
