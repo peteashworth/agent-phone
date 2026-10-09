@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { placeCall, confirmCall, getCall, hangup, watchdog, applyTwilioStatus } from '../src/calls.ts'
 import { spend, checkHours } from '../src/safety.ts'
 import { run } from '../src/db.ts'
-import { getContact } from '../src/contacts.ts'
+import { getContact, updateContact, addContact } from '../src/contacts.ts'
 import { detectHardStop } from '../src/voice/hardStops.ts'
 import { OutputFilter, checkText, BLOCKED_LINE } from '../src/voice/outputFilter.ts'
 import { setup, LIVE_ENV } from './helpers.ts'
@@ -22,6 +22,20 @@ describe('calling hours', () => {
     const c = setup().config
     expect(checkHours(c, 'America/Denver', new Date('2026-10-08T15:30:00Z'))).toBeNull()            // 9:30am MT
     expect(checkHours(c, 'America/Denver', new Date('2026-10-09T02:30:00Z'))?.code).toBe('outside_calling_hours')
+  })
+  it('seeded Pete is America/Denver: 8:30pm ET (6:30pm MT) is allowed', async () => {
+    const d = setup()
+    expect(getContact(d.db, PETE)?.tz).toBe('America/Denver')
+    d.now.t = new Date('2026-10-09T00:30:00Z')
+    await expect(placeCall(d, 'jasmine', { ...req, dry_run: true })).resolves.toBeTruthy()
+  })
+  it('update_contact sets, normalises, rejects and clears tz', () => {
+    const d = setup()
+    addContact(d.db, 'test', '+14352419384', 'Test')
+    expect(updateContact(d.db, 'test', '+14352419384', { tz: 'america/los_angeles' }).tz).toBe('America/Los_Angeles')
+    expect(() => updateContact(d.db, 'test', '+14352419384', { tz: 'Mountain' })).toThrow(/IANA/)
+    expect(getContact(d.db, '+14352419384')?.tz).toBe('America/Los_Angeles')
+    expect(updateContact(d.db, 'test', '+14352419384', { tz: null }).tz).toBeNull()
   })
   it('refuses at placement, even trusted and dry', async () => {
     const d = setup()

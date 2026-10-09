@@ -3,10 +3,16 @@ import { toE164 } from './phone.ts'
 
 export type Contact = {
   e164: string; name: string; trusted: number; do_not_call: number; inbound_allowed: number
-  notes: string; created_at: string; updated_at: string
+  notes: string; tz: string | null; created_at: string; updated_at: string
 }
-export type ContactPatch = { name?: string; notes?: string; trusted?: boolean; do_not_call?: boolean; inbound_allowed?: boolean }
-const PATCHABLE = new Set(['name', 'notes', 'trusted', 'do_not_call', 'inbound_allowed'])
+export type ContactPatch = { name?: string; notes?: string; trusted?: boolean; do_not_call?: boolean; inbound_allowed?: boolean; tz?: string | null }
+const PATCHABLE = new Set(['name', 'notes', 'trusted', 'do_not_call', 'inbound_allowed', 'tz'])
+
+/** An IANA time zone the runtime knows (e.g. America/Denver), normalised; throws otherwise. */
+export function validTz(tz: string): string {
+  try { return new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone }
+  catch { throw new Error(`Not an IANA time zone: ${tz} (e.g. America/Denver)`) }
+}
 
 export function normalizeOrThrow(phone: string): string {
   const e = toE164(phone)
@@ -34,7 +40,8 @@ export function addContact(db: DB, actor: string, phone: string, name: string, n
 export function updateContact(db: DB, actor: string, phone: string, patch: ContactPatch): Contact {
   const e164 = normalizeOrThrow(phone)
   if (!getContact(db, e164)) throw new Error(`No contact ${e164}`)
-  const sets: string[] = [], args: (string | number)[] = []
+  if (patch.tz) patch = { ...patch, tz: validTz(patch.tz) }
+  const sets: string[] = [], args: (string | number | null)[] = []
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined || !PATCHABLE.has(k)) continue
     sets.push(`${k} = ?`); args.push(typeof v === 'boolean' ? Number(v) : v)

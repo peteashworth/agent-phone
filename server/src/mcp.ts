@@ -110,13 +110,15 @@ export function buildMcpServer(d: Deps, agentId: string): McpServer {
 
   s.registerTool('update_contact', {
     title: 'Update a contact',
-    description: 'Change name/notes, or put the number on the do-not-call list. Trust and removing do-not-call are Pete-only.',
+    description: 'Change name/notes/time zone, or put the number on the do-not-call list. Trust and removing do-not-call are Pete-only.',
     // strict: an attempt to set trusted/inbound_allowed fails loudly instead of being silently dropped
     inputSchema: z.object({
       phone: z.string(),
       name: z.string().min(1).max(100).optional(),
       notes: z.string().max(2000).optional(),
       do_not_call: z.literal(true).optional().describe('Set true to stop all future calls to this number'),
+      tz: z.string().min(1).max(64).optional()
+        .describe('IANA time zone of the contact, e.g. America/Denver. Calling hours use it; without one the window must fit both US coasts'),
     }).strict(),
   }, guard(async ({ phone, ...patch }) => updateContact(d.db, agentId, phone, patch)))
 

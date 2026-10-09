@@ -17,7 +17,8 @@ export function seed(db: DB) {
         (10, '+14358403707', 'line', 'Calls to Pete show the Twilio line'),
         (100, NULL, 'mobile', 'Default: every other call shows Pete''s mobile')`)
     }
-    run(db, `INSERT OR IGNORE INTO contacts (e164, name, trusted, inbound_allowed) VALUES ('+14358403707', 'Pete', 1, 1)`)
+    run(db, `INSERT OR IGNORE INTO contacts (e164, name, trusted, inbound_allowed, tz) VALUES ('+14358403707', 'Pete', 1, 1, 'America/Denver')`)
+    run(db, `UPDATE contacts SET tz = 'America/Denver' WHERE e164 = '+14358403707' AND tz IS NULL`)
     run(db, `INSERT OR IGNORE INTO agents (id, name) VALUES ('jasmine', 'Jasmine')`)
     audit(db, 'cli', 'seed', null)
   })
@@ -32,6 +33,7 @@ const USAGE = `usage: node src/cli.ts <command>
   key:list
   key:revoke <prefix>
   contact:set <phone> <field> <0|1>             field: trusted | do_not_call | inbound_allowed
+  contact:tz <phone> <IANA zone|none>           e.g. America/Denver; none = unknown (window must fit both US coasts)
   numbers                         show numbers + caller-ID rules`
 
 async function main(argv: string[]) {
@@ -64,6 +66,11 @@ async function main(argv: string[]) {
       const [phone, field, v] = args
       if (!phone || !['trusted', 'do_not_call', 'inbound_allowed'].includes(field) || !['0', '1'].includes(v)) throw new Error(USAGE)
       console.log(updateContact(db, 'cli', phone, { [field]: v === '1' })); break
+    }
+    case 'contact:tz': {
+      const [phone, tz] = args
+      if (!phone || !tz) throw new Error(USAGE)
+      console.log(updateContact(db, 'cli', phone, { tz: tz === 'none' ? null : tz })); break
     }
     case 'numbers':
       console.table(all(db, 'SELECT * FROM numbers'))
