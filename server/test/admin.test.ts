@@ -145,7 +145,7 @@ describe('admin routes', () => {
     await app!.inject({ method: 'POST', url: `/phone/twilio/amd?call=${call.id}`,
       headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-twilio-signature': sig }, payload: new URLSearchParams(body).toString() })
     const r = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: as(SECRET), payload: { model: 'x', stream: false,
-      messages: [{ role: 'system', content: `call_id: ${call.id}` }, { role: 'assistant', content: 'Hi' }, { role: 'user', content: 'leave a message' }] } })
+      messages: [{ role: 'system', content: `call_id: ${call.id}` }, { role: 'assistant', content: "Hi, this is Jasmine, Pete's AI assistant. This call is being recorded." }, { role: 'user', content: 'leave a message' }] } })
     expect(r.json().choices[0].message.content).toBe('Call you later. Bye.')
   })
 

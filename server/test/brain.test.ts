@@ -5,8 +5,9 @@ import { createKey } from '../src/auth.ts'
 import { placeCall, getCall, warming, CallRefused } from '../src/calls.ts'
 import { claimNext, submitResult, markPoll, getJob, enqueueJob, type JobRow } from '../src/brainJobs.ts'
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, onlyFiller } from '../src/voice/brainTurn.ts'
-import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, CODE_ATTEMPT_PLACEHOLDER, pickFiller } from '../src/voice/lines.ts'
+import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, CODE_ATTEMPT_PLACEHOLDER, NOTICE_LINE, pickFiller } from '../src/voice/lines.ts'
 import { findPhrase, removePhrase } from '../src/voice/codePhrase.ts'
+import { isQuestion, isGoodbye } from '../src/voice/question.ts'
 import { OutputFilter } from '../src/voice/outputFilter.ts'
 import { redact } from '../src/postcall.ts'
 import { callDetail } from '../src/routes/api.ts'
@@ -61,7 +62,7 @@ function spoken(body: string): string {
 /** ElevenLabs' request: the whole conversation so far, user lines as given. */
 const turn = (callId: string, ...user: string[]) => ({
   model: 'x', stream: true,
-  messages: [{ role: 'system', content: `call_id: ${callId}` }, ...user.flatMap(u => [{ role: 'assistant', content: 'Hi' }, { role: 'user', content: u }])],
+  messages: [{ role: 'system', content: `call_id: ${callId}` }, ...user.flatMap((u, i) => [{ role: 'assistant', content: i ? 'Hi' : "Hi, this is Jasmine, Pete's AI assistant. This call is being recorded." }, { role: 'user', content: u }])],
 })
 const ask = (callId: string, ...user: string[]) => app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(callId, ...user) })
 
@@ -394,5 +395,96 @@ describe('output filter tiers', () => {
       const f = new OutputFilter([], { personal, intimate: ['velvetword'] })
       expect(f.push('Sure. ') + f.push('That is velvetword stuff. ') + f.flush()).not.toContain('velvetword')
     }
+  })
+})
+
+describe('recording notice repeat (Bob call: opener cut off at "Hi Bob, it\'s Jasmine,")', () => {
+  const post = (callId: string, messages: object[]) => app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH,
+    payload: { model: 'x', stream: true, messages: [{ role: 'system', content: `call_id: ${callId}` }, ...messages] } })
+  const events = (d: ReturnType<typeof setup>, id: string, type: string) =>
+    all<{ data: string }>(d.db, 'SELECT data FROM call_events WHERE call_id = ? AND type = ?', id, type).map(r => JSON.parse(r.data))
+  const CUT = "Hi Bob, it's"
+
+  it('opener cut off: the notice goes ahead of the next reply, logged, opener turn marked interrupted', async () => {
+    const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Hey, so about Saturday.' }]])
+    await post(call.id, [{ role: 'user', content: 'Hello?' }]) // opening: the disclosure turn row
+    const r = await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: 'Who is this?' }])
+    expect(spoken(r.body)).toBe(NOTICE_LINE + 'Hey, so about Saturday.')
+    expect(events(d, call.id, 'notice_repeated')).toEqual([{ turn: 'brain', heard: CUT }])
+    expect(all<{ kind: string; outcome: string }>(d.db, 'SELECT kind, outcome FROM call_turns WHERE call_id = ? ORDER BY id', call.id)
+      .map(t => [t.kind, t.outcome])).toEqual([['disclosure', 'interrupted'], ['brain', 'ok']])
+  })
+  it('notice heard: no repeat', async () => {
+    const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Great.' }]])
+    const r = await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: "Hi Bob, this call's being recorded. It's" },
+      { role: 'user', content: 'Oh hi.' }])
+    expect(spoken(r.body)).toBe('Great.')
+    expect(events(d, call.id, 'notice_repeated')).toEqual([])
+  })
+  it('the brain said it itself on a later turn: no repeat', async () => {
+    const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Sure.' }]])
+    const r = await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: 'Who?' },
+      { role: 'assistant', content: "It's Jasmine, Pete's assistant, and this call is being recorded." }, { role: 'user', content: 'Okay.' }])
+    expect(spoken(r.body)).toBe('Sure.')
+    expect(events(d, call.id, 'notice_repeated')).toEqual([])
+  })
+  it('an objection right after the repeated notice is a recording objection', async () => {
+    const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Hey.' }]])
+    const first = spoken((await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: 'Yeah?' }])).body)
+    expect(first.startsWith(NOTICE_LINE)).toBe(true)
+    await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: 'Yeah?' },
+      { role: 'assistant', content: first }, { role: 'user', content: "Don't record me." }])
+    expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:recording_objection')
+  })
+  it('a hard stop before the notice was heard says it first; a recording objection does not', async () => {
+    const { d, call } = await start()
+    const r = await post(call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: "I don't want to talk to a robot." }])
+    expect(spoken(r.body).startsWith(NOTICE_LINE)).toBe(true)
+    expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:ai_objection')
+    const b = await start()
+    const s = await post(b.call.id, [{ role: 'user', content: 'Hello?' }, { role: 'assistant', content: CUT }, { role: 'user', content: 'Are you recording this? Stop recording.' }])
+    expect(spoken(s.body)).not.toContain(NOTICE_LINE)
+  })
+})
+
+describe('end_call on an open question (Bob call: "Why do all the hotshots drive a Ram?" → hangup)', () => {
+  it('refused while the callee is asking: the line is said, no hangup, logged', async () => {
+    const { d, call, seen } = await start({}, {}, [undefined as never, [{ say: 'Ha, good question. [[end_call]]' }]])
+    expect(spoken((await ask(call.id, 'Why do all the hotshots drive a Ram')).body)).toBe('Ha, good question.')
+    expect(getCall(d.db, call.id)).toMatchObject({ end_reason: null, hangup_requested_at: null })
+    expect(all(d.db, "SELECT 1 FROM call_events WHERE call_id = ? AND type = 'end_call_refused'", call.id)).toHaveLength(1)
+    expect(all<{ outcome: string }>(d.db, "SELECT outcome FROM call_turns WHERE call_id = ? AND kind = 'brain'", call.id)[0].outcome).toBe('end_call_refused')
+    expect(JSON.parse(seen.find(j => j.type === 'turn')!.payload).last_user_is_question).toBe(true)
+  })
+  it('allowed when the question is their own goodbye', async () => {
+    for (const q of ['Can I go now?', 'Okay, bye?']) {
+      const { d, call } = await start({}, {}, [undefined as never, [{ say: 'Of course, bye! [[end_call]]' }]])
+      await ask(call.id, q)
+      expect(getCall(d.db, call.id)!.end_reason, q).toBe('brain_end')
+      stopHost?.(); await app?.close(); app = undefined
+    }
+  })
+  it('allowed after a statement; the payload says it was not a question', async () => {
+    const { d, call, seen } = await start({}, {}, [undefined as never, [{ say: 'Bye! [[end_call]]' }]])
+    await ask(call.id, 'Alright, talk later.')
+    expect(getCall(d.db, call.id)!.end_reason).toBe('brain_end')
+    expect(JSON.parse(seen.find(j => j.type === 'turn')!.payload).last_user_is_question).toBe(false)
+  })
+})
+
+describe('isQuestion / isGoodbye', () => {
+  it('question mark or a question-shaped last sentence', () => {
+    for (const q of ['Why do all the hotshots drive a Ram', 'Why do all the hotshots drive a Ram?', 'Okay. And when is it?', 'what time "tomorrow?"',
+      'Sure. Do you know where it is', 'is that right'])
+      expect(isQuestion(q), q).toBe(true)
+    for (const s of ['Okay, sounds good.', 'Thanks!', '', 'I wonder', 'That is what I said.'])
+      expect(isQuestion(s), s).toBe(false)
+  })
+  it('leans to "question": a false positive only keeps the call open one more turn', () => {
+    expect(isQuestion('Why not.')).toBe(true)
+  })
+  it('goodbyes', () => {
+    for (const g of ['Bye?', 'Can I go now?', 'Talk to you later?', 'I’ll let you go', 'Are we done?']) expect(isGoodbye(g), g).toBe(true)
+    for (const s of ['Why do all the hotshots drive a Ram?', 'Where is it?', 'Goodness']) expect(isGoodbye(s), s).toBe(false)
   })
 })

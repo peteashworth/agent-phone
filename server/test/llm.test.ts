@@ -29,7 +29,7 @@ function spoken(body: string): string {
 }
 const turn = (system: string, ...user: string[]) => ({
   model: 'x', stream: true,
-  messages: [{ role: 'system', content: system }, ...user.flatMap(u => [{ role: 'assistant', content: 'Hi' }, { role: 'user', content: u }])],
+  messages: [{ role: 'system', content: system }, ...user.flatMap((u, i) => [{ role: 'assistant', content: i ? 'Hi' : "Hi, this is Jasmine, Pete's AI assistant. This call is being recorded." }, { role: 'user', content: u }])],
 })
 
 describe('custom LLM route', () => {

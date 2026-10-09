@@ -9,7 +9,8 @@ import { loadFacts, pickFacts, factsFor, filterFacts, type Fact } from '../facts
 import type { FilterOptions } from './outputFilter.ts'
 import { type ChatMessage, textOf } from './brain.ts'
 import { findPhrase, removePhrase } from './codePhrase.ts'
-import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, pickFiller, CODE_ATTEMPT_PLACEHOLDER, speakMs } from './lines.ts'
+import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, NOTICE_LINE, pickFiller, CODE_ATTEMPT_PLACEHOLDER, speakMs } from './lines.ts'
+import { isQuestion, isGoodbye } from './question.ts'
 
 export const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
@@ -27,6 +28,8 @@ export class TurnLog {
   jobId: string | null = null
   attempts = 0
   redact: string[] = []
+  /** This turn starts with NOTICE_LINE (the callee hadn't heard the recording notice yet). */
+  notice = false
   private row: number | bigint = 0
   private d: Deps
   private call: CallRow
@@ -71,7 +74,7 @@ function previousTurn(d: Deps, callId: string) {
 /** True if the text is fillers only (or nothing): the person never heard an answer in it. */
 export function onlyFiller(said: string | null): boolean {
   let s = said ?? ''
-  for (const l of [...FILLER_LINES, FILLER2_LINE].map(l => l.trim())) s = s.split(l).join('')
+  for (const l of [...FILLER_LINES, FILLER2_LINE, NOTICE_LINE].map(l => l.trim())) s = s.split(l).join('')
   return !s.trim()
 }
 
@@ -112,6 +115,8 @@ export type Prepared = {
   usersUpto: number
   seq: number
   filter: FilterOptions
+  /** The callee's latest words are a question (and not a goodbye): the brain may not end the call on this turn. */
+  keepOpen: boolean
 }
 
 const userTexts = (messages: ChatMessage[]) => messages.filter(m => m.role === 'user').map(m => textOf(m.content))
@@ -205,12 +210,14 @@ export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage
     : prev?.said && (prev.outcome === 'barge_in' || (lastAgent && lastAgent.length < prev.said.trim().length - 2))
       ? { spoken: lastAgent || null } : null
 
+  const question = userText !== CODE_ATTEMPT_PLACEHOLDER && isQuestion(userText)
+
   const seq = now.brain_seq + 1
   run(db, 'UPDATE calls SET brain_seq = ? WHERE id = ?', seq, call.id)
   return {
-    call: now, seq, usersUpto: users.length, filter: filterOptions(d, now),
+    call: now, seq, usersUpto: users.length, filter: filterOptions(d, now), keepOpen: question && !isGoodbye(userText),
     payload: {
-      tier: now.tier, user_text: userText, interrupted, code_phrase: codePhrase,
+      tier: now.tier, user_text: userText, last_user_is_question: question, interrupted, code_phrase: codePhrase,
       ...(codePhrase === 'verified' ? { brief_personal: now.brief_personal, facts: factsFor(picked, 'code') } : {}),
       ...(locked ? { code_locked: true } : {}),
       // The host picked the job this one replaces: its answer to that one was never spoken.
@@ -247,15 +254,18 @@ export function alreadySaid(db: Deps['db'], callId: string, line: string): boole
 
 /**
  * Sends the turn job and streams: fillers while it's pending, then the answer. Ends the call itself on timeout, host
- * failure (after one retry), an offline host, or [[end_call]]. Barge-in (signal) cancels the job.
+ * failure (after one retry), an offline host, or [[end_call]] (refused while the callee's question is open). Barge-in
+ * (signal) cancels the job.
  */
 export async function* runJasmineTurn(d: Deps, p: Prepared, log: TurnLog, signal: AbortSignal): AsyncGenerator<string> {
   const { config: c, db } = d
   const id = p.call.id
+  // A recording notice said ahead of this turn may still be playing: the hangup waits for it as well.
+  const noticeLeft = () => log.notice ? Math.max(log.t0 + speakMs(NOTICE_LINE, 0) - Date.now(), 0) : 0
   const exit = (reason: 'brain_timeout' | 'brain_offline', outcome: string) => {
     log.outcome = outcome
     event(db, id, 'server', reason, { seq: p.seq, attempts: log.attempts })
-    void hangup(d, id, reason, speakMs(EXIT_LINE, c.HANGUP_DELAY_MS))
+    void hangup(d, id, reason, speakMs(EXIT_LINE, c.HANGUP_DELAY_MS) + noticeLeft())
     return EXIT_LINE
   }
   if (!brainOnline(c, db)) { yield exit('brain_offline', 'offline'); return }
@@ -294,9 +304,13 @@ export async function* runJasmineTurn(d: Deps, p: Prepared, log: TurnLog, signal
       }
       if (a.ask_code && getCall(db, id)!.tier !== 'personal') run(db, 'UPDATE calls SET code_asked = 1 WHERE id = ?', id)
       if (a.say) yield a.say
-      if (a.end_call) {
+      if (a.end_call && p.keepOpen) {
+        // Never hang up on an open question: the line is said, the call stays up, the brain gets the next turn.
+        log.outcome = 'end_call_refused'
+        event(db, id, 'server', 'end_call_refused', { seq: p.seq })
+      } else if (a.end_call) {
         log.outcome = 'end_call'
-        void hangup(d, id, 'brain_end', speakMs(a.say, c.HANGUP_DELAY_MS))
+        void hangup(d, id, 'brain_end', speakMs(a.say, c.HANGUP_DELAY_MS) + noticeLeft())
       }
       return
     }

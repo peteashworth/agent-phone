@@ -3,7 +3,7 @@
 // is checked before any model runs, and on a hit we speak the close line and hang up via Twilio ourselves.
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { randomBytes } from 'node:crypto'
-import { type Deps, type CallRow, getCall, hangup, LIVE_STATUSES } from '../calls.ts'
+import { type Deps, type CallRow, getCall, hangup, event, LIVE_STATUSES } from '../calls.ts'
 import { safeEqual } from '../auth.ts'
 import { all, audit, run } from '../db.ts'
 import { setDoNotCall, getContact } from '../contacts.ts'
@@ -13,7 +13,7 @@ import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '..
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine, alreadySaid, takeContinuation } from '../voice/brainTurn.ts'
 import type { FilterOptions } from '../voice/outputFilter.ts'
 import { awaitHuman, applyGreeting, isMachine } from '../postcall.ts'
-import { openerFor } from '../voice/lines.ts'
+import { openerFor, NOTICE_LINE, noticeHeard, speakMs } from '../voice/lines.ts'
 import { effective } from '../settings.ts'
 
 type Body = { model?: string; messages?: ChatMessage[]; stream?: boolean }
@@ -90,6 +90,17 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     // Is this the person's reply to the disclosure ("…This call is being recorded.")? Holds for option A and B alike.
     const prevAgent = messages.slice(0, Math.max(lastUserIdx, 0)).findLast(m => m.role === 'assistant')
     const afterDisclosure = /being recorded/i.test(textOf(prevAgent?.content))
+    // Wait-for-hello opening (agent first_message blank): nothing has been said to the callee yet.
+    const agentTexts = messages.filter(m => m.role === 'assistant').map(m => textOf(m.content)).filter(t => t.trim())
+    const opening = !agentTexts.length
+    // The opener was cut off before "being recorded" (or the brain spoke without it): the notice goes ahead of this
+    // turn's line. Repeats until ElevenLabs reports it as played.
+    const noticeDue = !opening && !noticeHeard(agentTexts)
+    const repeatNotice = (call: CallRow, log: TurnLog) => {
+      log.notice = true
+      event(db, call.id, 'server', 'notice_repeated', { turn: log.kind, heard: agentTexts[0].slice(0, 200) })
+      run(db, "UPDATE call_turns SET outcome = 'interrupted' WHERE call_id = ? AND kind = 'disclosure' AND outcome = 'disclosure'", call.id)
+    }
 
     // Already hanging up: never hand the turn back to the model. The close line is said once; repeats stay silent.
     const prior = call?.hangup_requested_at && call.end_reason?.startsWith('hard_stop:')
@@ -104,7 +115,10 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     let source: AsyncIterable<string>
     if (stop) {
       if (call) log = new TurnLog(d, call, kind, prior ? 'closing' : 'hard_stop')
-      const line = prior && call && alreadySaid(db, call.id, CLOSE_LINES[stop]) ? '' : CLOSE_LINES[stop]
+      // A first hard stop still says the notice if it wasn't heard; not for a recording objection (they've got it).
+      const lead = !prior && noticeDue && stop !== 'recording_objection' && call && log
+      if (lead) repeatNotice(call, log!)
+      const line = prior && call && alreadySaid(db, call.id, CLOSE_LINES[stop]) ? '' : (lead ? NOTICE_LINE : '') + CLOSE_LINES[stop]
       source = (async function* () { if (line) yield line })()
       if (!prior) {
         req.log.warn({ call: call?.id, stop }, 'hard stop')
@@ -112,13 +126,12 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         if (call) {
           if (stop === 'opt_out') setDoNotCall(db, 'system', call.to_e164, `said on call ${call.id}`)
           // hangup() marks the call synchronously, then waits for the close line to play before ending it.
-          void hangup(d, call.id, `hard_stop:${stop}`, c.HANGUP_DELAY_MS)
+          void hangup(d, call.id, `hard_stop:${stop}`, c.HANGUP_DELAY_MS + (lead ? speakMs(NOTICE_LINE, 0) : 0))
         }
       }
     } else {
-      // Wait-for-hello opening (agent first_message blank): nothing has been said to the callee yet, so this turn is
-      // the disclosure and nothing else. It doesn't wait for AMD: it's fixed text with nothing from the brief in it.
-      const opening = !messages.some(m => m.role === 'assistant' && textOf(m.content).trim())
+      // Opening: this turn is the disclosure and nothing else. It doesn't wait for AMD: it's fixed text with nothing
+      // from the brief in it.
       // Answering machines: what the callee said feeds the verdict, then nothing from the brief is said until there is
       // one (or the wait runs out). Only machine_*/fax is a machine; unknown and timeout carry on as human.
       let now = call ? await applyGreeting(d, call, lastUser, opening) : undefined
@@ -160,6 +173,11 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       }
     }
     if (log && log.kind !== 'brain') log.outcome = log.kind
+    if (log?.kind === 'brain' && noticeDue && call) {
+      repeatNotice(call, log)
+      const inner = source
+      source = (async function* () { yield NOTICE_LINE; yield* inner })()
+    }
 
     const filter = new OutputFilter(c.PRIVATE_TERMS, filterOpts)
     /** Text cleared by the filter on its way to ElevenLabs. Timing counts only the answer, not fillers. */

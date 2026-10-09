@@ -56,12 +56,15 @@ Expected result: `{ "ready": true }`.
   "tier": "public",
   "user_text": "Sure, Tuesday works.",
   "interrupted": { "spoken": "I can do Tuesday or Wed—" },
+  "last_user_is_question": false,
   "code_phrase": null }
 ```
 - `user_text` holds only what's new since the last delivered turn. The session already has its own history; we don't
   replay EL's full message list.
 - `interrupted` is set when the person cut off the last reply. `spoken` is what EL actually played, so the session knows
   what the person did and didn't hear.
+- `last_user_is_question` (Oct 8): `user_text` ends in "?" or its last sentence starts like a question (STT often drops the
+  "?"). It leans towards yes. The session should answer the question, not end the call.
 - `code_phrase` is `null`, `"verified"` or `"incorrect"` (§7). The phrase itself is never sent.
 - `continues` (only sometimes): the `seq` of an earlier turn this one replaces (continuation, §5). Its `user_text`
   already holds the earlier words too, and the answer to the earlier turn was never spoken.
@@ -71,7 +74,10 @@ Expected result:
 { "say": "Tuesday at ten works. I'll put it in Pete's calendar.", "end_call": false, "ask_code": false,
   "note_for_jasmine": null }
 ```
-- `end_call: true` means we speak `say`, then hang up (`end_reason=brain_end`).
+- `end_call: true` means we speak `say`, then hang up (`end_reason=brain_end`). **Exception (Oct 8, Bob call):** if
+  `last_user_is_question` was true and the callee's words aren't a goodbye ("Bye?", "Can I go now?"), the server
+  refuses it. `say` is still spoken, the call stays open, the turn outcome is `end_call_refused`, and a
+  `end_call_refused` event is logged.
 - `ask_code: true` means Jasmine is asking for the code phrase, so the next user turn is checked as an attempt (§7).
 - `note_for_jasmine` is stored on the call (for example "they want a callback Friday") and shown in `get_call`.
 

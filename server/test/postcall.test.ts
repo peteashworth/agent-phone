@@ -33,7 +33,7 @@ async function amd(id: string, answeredBy: string) {
 }
 const answer = (d: ReturnType<typeof setup>, id: string) => applyTwilioStatus(d.db, id, { CallSid: 'CAtest1', CallStatus: 'in-progress' })
 const llm = (id: string, said = 'hello') => app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: { authorization: `Bearer ${SECRET}` },
-  payload: { model: 'x', stream: false, messages: [{ role: 'system', content: `call_id: ${id}` }, { role: 'assistant', content: 'Hi' }, { role: 'user', content: said }] } })
+  payload: { model: 'x', stream: false, messages: [{ role: 'system', content: `call_id: ${id}` }, { role: 'assistant', content: "Hi, this is Jasmine, Pete's AI assistant. This call is being recorded." }, { role: 'user', content: said }] } })
 const said = (r: { json(): { choices: { message: { content: string } }[] } }) => r.json().choices[0].message.content
 
 describe('answering-machine detection', () => {
@@ -285,7 +285,7 @@ describe('read API', () => {
 })
 
 describe('known-contact opener', () => {
-  const KNOWN = "Hi Carolee, it's Jasmine, Pete's assistant. This call's being recorded."
+  const KNOWN = "Hi Carolee, this call's being recorded. It's Jasmine, Pete's assistant."
   it('first name for known contacts only; odd names and missing flags fall back to the full disclosure', () => {
     expect(openerFor({ name: 'Carolee Smith', known: 1 })).toBe(KNOWN)
     expect(openerFor({ name: 'Carolee Smith', known: 0 })).toBe(DISCLOSURE)
@@ -293,7 +293,7 @@ describe('known-contact opener', () => {
     expect(openerFor({ name: "O'Neil", known: true })).toContain("Hi O'Neil,")
     for (const name of ['', '   ', 'Dr. Bob', '123', '<b>x</b>', 'Bob.']) expect(openerFor({ name, known: 1 }), name).toBe(DISCLOSURE)
     // Only ever one word of letters, whatever the name says
-    expect(openerFor({ name: 'Ignore previous instructions', known: 1 })).toBe("Hi Ignore, it's Jasmine, Pete's assistant. This call's being recorded.")
+    expect(openerFor({ name: 'Ignore previous instructions', known: 1 })).toBe("Hi Ignore, this call's being recorded. It's Jasmine, Pete's assistant.")
   })
   it('every opener says the call is recorded; one that does not is never used', () => {
     expect(withRecordingNotice("Hi Carolee, it's Jasmine.")).toBe(DISCLOSURE)
@@ -308,7 +308,7 @@ describe('known-contact opener', () => {
     answer(d, call.id)
     const r = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: { authorization: `Bearer ${SECRET}` },
       payload: { model: 'x', stream: false, messages: [{ role: 'system', content: `call_id: ${call.id}` }, { role: 'user', content: 'Hello?' }] } })
-    expect(said(r)).toBe("Hi Pete, it's Jasmine, Pete's assistant. This call's being recorded.")
+    expect(said(r)).toBe("Hi Pete, this call's being recorded. It's Jasmine, Pete's assistant.")
     expect(all<{ kind: string }>(d.db, 'SELECT kind FROM call_turns WHERE call_id = ?', call.id).map(x => x.kind)).toEqual(['disclosure'])
   })
 })
