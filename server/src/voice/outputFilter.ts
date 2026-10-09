@@ -6,15 +6,18 @@ export const BLOCKED_LINE = "Sorry, I can't share that on this call."
 
 export type BlockReason = 'email' | 'card_number' | 'ssn' | 'street_address' | 'private_term' | 'private_fact' | 'intimate'
 
-// Blocked in every tier, on top of INTIMATE_TERMS (docs/phone-persona.md: no intimate or romantic content on a call).
+// Blocked in the public tier, on top of INTIMATE_TERMS (docs/phone-persona.md). Pete's personal tier lets them through.
 export const DEFAULT_INTIMATE_TERMS = ['girlfriend', 'sexy', 'sex', 'sexual', 'naked', 'nude', 'lingerie', 'intimate',
   'make love', 'making love', 'turn me on', 'foreplay', 'orgasm', 'aroused', 'horny', 'erotic',
   'in bed together', 'my love', 'i love you']
 
 export type FilterOptions = {
-  /** Personal tier (code phrase verified): PRIVATE_TERMS are relaxed. Nothing else is. */
+  /**
+   * Personal tier (code phrase verified, Pete only): intimate terms, email, street address and PRIVATE_TERMS are let
+   * through. Card numbers, SSNs and never-facts stay blocked in every tier.
+   */
   personal?: boolean
-  /** Extra intimate terms (config INTIMATE_TERMS); blocked in every tier together with DEFAULT_INTIMATE_TERMS. */
+  /** Extra intimate terms (config INTIMATE_TERMS); blocked with DEFAULT_INTIMATE_TERMS outside the personal tier. */
   intimate?: string[]
   /** Exact fact values this call may say; exempt from the pattern checks (a VIN, an address the brief allows). */
   allow?: string[]
@@ -47,16 +50,16 @@ const INTIMATE = wordsRe(DEFAULT_INTIMATE_TERMS)!
 
 export function checkText(text: string, privateTerms: string[], o: FilterOptions = {}): BlockReason | null {
   let t = squash(text)
-  if (INTIMATE.test(t) || wordsRe(o.intimate ?? [])?.test(t)) return 'intimate'
+  if (!o.personal && (INTIMATE.test(t) || wordsRe(o.intimate ?? [])?.test(t))) return 'intimate'
   if (o.block?.some(v => v && t.includes(squash(v)))) return 'private_fact'
   for (const v of o.allow ?? []) if (v) t = t.split(squash(v)).join(' allowed ')
-  if (EMAIL.test(t)) return 'email'
+  if (!o.personal && EMAIL.test(t)) return 'email'
   if (SSN.test(t)) return 'ssn'
   for (const m of t.match(DIGIT_RUN) ?? []) {
     const d = m.replace(/\D/g, '')
     if (d.length >= 13 && d.length <= 19 && luhn(d)) return 'card_number'
   }
-  if (STREET.test(t)) return 'street_address'
+  if (!o.personal && STREET.test(t)) return 'street_address'
   if (!o.personal && privateTerms.some(p => p && t.includes(squash(p)))) return 'private_term'
   return null
 }

@@ -8,7 +8,7 @@ import { TurnLog, prepareJasmineTurn, runJasmineTurn, onlyFiller } from '../src/
 import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, NOTICE_LINE, pickFiller } from '../src/voice/lines.ts'
 import { findPhrase, nearMiss, removePhrase } from '../src/voice/codePhrase.ts'
 import { isQuestion, isGoodbye } from '../src/voice/question.ts'
-import { OutputFilter } from '../src/voice/outputFilter.ts'
+import { OutputFilter, BLOCKED_LINE } from '../src/voice/outputFilter.ts'
 import { redact } from '../src/postcall.ts'
 import { callDetail } from '../src/routes/api.ts'
 import { all } from '../src/db.ts'
@@ -419,10 +419,17 @@ describe('code phrase', () => {
 })
 
 describe('output filter tiers', () => {
-  it('intimate terms are blocked in every tier', () => {
-    for (const personal of [false, true]) {
-      const f = new OutputFilter([], { personal, intimate: ['velvetword'] })
-      expect(f.push('Sure. ') + f.push('That is velvetword stuff. ') + f.flush()).not.toContain('velvetword')
+  it('public tier blocks intimate terms, email, address, private terms; personal lets them through', () => {
+    const say = (personal: boolean, line: string) => { const f = new OutputFilter(['Bluebird'], { personal, intimate: ['velvetword'] }); return f.push('Sure. ') + f.push(line) + f.flush() }
+    for (const line of ['That is velvetword stuff. ', 'I love you. ', 'It is pete at example dot com. ', 'Go to 12 Oak Street. ', 'The word is Bluebird. ']) {
+      expect(say(false, line), line).toContain(BLOCKED_LINE)
+      expect(say(true, line), line).toBe('Sure. ' + line)
+    }
+  })
+  it('card numbers and SSNs stay blocked in the personal tier', () => {
+    for (const line of ['Card 4111 1111 1111 1111. ', 'SSN 123-45-6789. ']) {
+      const f = new OutputFilter([], { personal: true })
+      expect(f.push(line) + f.flush(), line).toContain(BLOCKED_LINE)
     }
   })
 })

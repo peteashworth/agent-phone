@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.ts'
 import { placeCall, getCall } from '../src/calls.ts'
 import { getContact } from '../src/contacts.ts'
 import { all } from '../src/db.ts'
-import { CLOSE_LINES } from '../src/voice/hardStops.ts'
+import { CLOSE_LINES, closeLine, detectHardStop } from '../src/voice/hardStops.ts'
 import { BLOCKED_LINE } from '../src/voice/outputFilter.ts'
 import { CANNED_LINES } from '../src/voice/brain.ts'
 import { setup, LIVE_ENV } from './helpers.ts'
@@ -76,6 +76,25 @@ describe('custom LLM route', () => {
     expect(spoken(r.body)).toBe(CLOSE_LINES.opt_out)
     expect(getContact(d.db, '+14358403707')!.do_not_call).toBe(1)
     expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:opt_out')
+  })
+  it('personal tier: no ai_objection, no "off the record", opt-out ends the call without DNC', async () => {
+    const { d, call } = await start()
+    d.db.prepare("UPDATE calls SET tier = 'personal' WHERE id = ?").run(call.id)
+    for (const u of ["I don't want to talk to a robot", 'this is off the record'])
+      expect(spoken((await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, u) })).body)).toBe(CANNED_LINES[0])
+    expect(getCall(d.db, call.id)!.end_reason).toBeNull()
+    const r = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'stop calling me') })
+    expect(spoken(r.body)).toBe(closeLine('opt_out', true))
+    expect(getContact(d.db, '+14358403707')?.do_not_call ?? 0).toBe(0)
+    expect(getCall(d.db, call.id)!.end_reason).toBe('hard_stop:opt_out')
+    const again = await app!.inject({ method: 'POST', url: '/phone/llm/v1', headers: AUTH, payload: turn(`call_id: ${call.id}`, 'wait') })
+    expect(spoken(again.body)).toBe('') // said once
+  })
+  it('personal tier: a real recording objection still stops', () => {
+    expect(detectHardStop("don't record this", { personal: true })).toBe('recording_objection')
+    expect(detectHardStop('off the record', { personal: true })).toBeNull()
+    expect(detectHardStop('off the record')).toBe('recording_objection')
+    expect(detectHardStop('no robots', { personal: true })).toBeNull()
   })
   it('output filter swaps a leaked email ("filter test") and private terms', async () => {
     const { d, call } = await start({ })

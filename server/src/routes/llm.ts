@@ -7,7 +7,7 @@ import { type Deps, type CallRow, getCall, hangup, event, LIVE_STATUSES } from '
 import { safeEqual } from '../auth.ts'
 import { all, audit, run } from '../db.ts'
 import { setDoNotCall, getContact } from '../contacts.ts'
-import { detectHardStop, CLOSE_LINES } from '../voice/hardStops.ts'
+import { detectHardStop, closeLine, CLOSE_LINES } from '../voice/hardStops.ts'
 import { OutputFilter } from '../voice/outputFilter.ts'
 import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '../voice/brain.ts'
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine, alreadySaid, takeContinuation } from '../voice/brainTurn.ts'
@@ -105,7 +105,9 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     // Already hanging up: never hand the turn back to the model. The close line is said once; repeats stay silent.
     const prior = call?.hangup_requested_at && call.end_reason?.startsWith('hard_stop:')
       ? call.end_reason.slice('hard_stop:'.length) as keyof typeof CLOSE_LINES : null
-    const stop = prior ?? detectHardStop(lastUser, { afterDisclosure })
+    // Pete's personal tier: no ai_objection, no "off the record", and an opt-out ends the call without a DNC.
+    const personal = call?.tier === 'personal'
+    const stop = prior ?? detectHardStop(lastUser, { afterDisclosure, personal })
     req.log.info({ marker: callMarker(messages), call: call?.id ?? null, turns: messages.length, stop }, 'llm turn')
 
     const kind = call?.brain ?? c.BRAIN
@@ -118,13 +120,14 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       // A first hard stop still says the notice if it wasn't heard; not for a recording objection (they've got it).
       const lead = !prior && noticeDue && stop !== 'recording_objection' && call && log
       if (lead) repeatNotice(call, log!)
-      const line = prior && call && alreadySaid(db, call.id, CLOSE_LINES[stop]) ? '' : (lead ? NOTICE_LINE : '') + CLOSE_LINES[stop]
+      const close = closeLine(stop, personal)
+      const line = prior && call && alreadySaid(db, call.id, close) ? '' : (lead ? NOTICE_LINE : '') + close
       source = (async function* () { if (line) yield line })()
       if (!prior) {
         req.log.warn({ call: call?.id, stop }, 'hard stop')
-        audit(db, 'system', 'call.hard_stop', call?.id ?? null, { stop, identified: !!call })
+        audit(db, 'system', 'call.hard_stop', call?.id ?? null, { stop, identified: !!call, ...(personal ? { personal } : {}) })
         if (call) {
-          if (stop === 'opt_out') setDoNotCall(db, 'system', call.to_e164, `said on call ${call.id}`)
+          if (stop === 'opt_out' && !personal) setDoNotCall(db, 'system', call.to_e164, `said on call ${call.id}`)
           // hangup() marks the call synchronously, then waits for the close line to play before ending it.
           void hangup(d, call.id, `hard_stop:${stop}`, c.HANGUP_DELAY_MS + (lead ? speakMs(NOTICE_LINE, 0) : 0))
         }
