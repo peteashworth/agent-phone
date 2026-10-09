@@ -44,11 +44,14 @@ describe('http', () => {
     expect(r.statusCode).toBe(403)
   })
 
-  it('inbound: Pete hears a notice, others are rejected (token mode)', async () => {
+  it('inbound (token mode, inbound off): everyone hears the no-incoming line; reject mode rejects others', async () => {
     const token = 'x'.repeat(32)
     await start({ WEBHOOK_TOKEN: token })
     const call = (From: string) => app!.inject({ method: 'POST', url: `/phone/twilio/voice?t=${token}`, headers: FORM, payload: form({ From, To: '+14352644845' }) })
-    expect((await call('+14358403707')).body).toContain('<Say>')
+    expect((await call('+14358403707')).body).toContain("doesn&#39;t take incoming calls")
+    expect((await call('+14352419384')).body).toContain("doesn&#39;t take incoming calls")
+    await app!.close()
+    await start({ WEBHOOK_TOKEN: token, INBOUND_OTHERS: 'reject' })
     expect((await call('+14352419384')).body).toContain('<Reject')
   })
 })

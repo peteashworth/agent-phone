@@ -5,6 +5,8 @@ export type RegisterCall = {
   from: string; to: string
   /** Defaults to ELEVENLABS_AGENT_ID. */
   agentId?: string
+  /** Default outbound. Inbound: from = the caller, to = our number. */
+  direction?: 'inbound' | 'outbound'
   dynamicVariables?: Record<string, string | number | boolean>
 }
 
@@ -56,7 +58,7 @@ export function elevenLabsClient(c: Config, f: Fetch = fetch): ElevenLabsClient 
         method: 'POST',
         headers: { 'content-type': 'application/json', 'xi-api-key': c.ELEVENLABS_API_KEY },
         body: JSON.stringify({
-          agent_id: agentId, from_number: r.from, to_number: r.to, direction: 'outbound',
+          agent_id: agentId, from_number: r.from, to_number: r.to, direction: r.direction ?? 'outbound',
           ...(r.dynamicVariables && { conversation_initiation_client_data: { dynamic_variables: r.dynamicVariables } }),
         }),
       })

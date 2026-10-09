@@ -15,7 +15,7 @@ const fail = (msg: string) => ({ content: [{ type: 'text' as const, text: msg }]
 
 function view(c: CallRow) {
   return {
-    id: c.id, status: c.status, dry_run: !!c.dry_run, to: c.to_e164, contact: null as string | null,
+    id: c.id, direction: c.direction ?? 'outbound', status: c.status, dry_run: !!c.dry_run, to: c.to_e164, contact: null as string | null,
     from: c.from_e164, from_label: c.from_label, purpose: c.purpose, created_at: c.created_at,
     confirm_expires_at: c.status === 'awaiting_confirmation' ? c.confirm_expires_at : undefined,
     started_at: c.started_at, ended_at: c.ended_at, duration_s: c.duration_s, end_reason: c.end_reason, error: c.error,

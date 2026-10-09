@@ -48,5 +48,23 @@ Spec: Jasmine-nanoclaw/projects/phone-pete-tier-spec.md. This file records what 
   `checkins_paused`, `outside_checkin_hours`, `checkin_cap`, `checkin_too_soon`, `checkin_quiet`.
 - call.start to the host carries `checkin: true`.
 
-## Not built yet
-- Inbound (step 7).
+## Inbound (step 7)
+- Twilio Voice URL on our number → `/phone/twilio/voice` → `src/inbound.ts`. The number check is on the caller
+  (`From`): PERSONAL_OK_NUMBERS and contact `inbound_allowed`.
+- Everyone else hears NO_INCOMING_LINE ("This line doesn't take incoming calls. Goodbye.") from Twilio `<Say>`, or a
+  `<Reject>` with `INBOUND_OTHERS=reject`. No name, nothing about a phrase, never reaches ElevenLabs or the brain.
+  Audit `inbound.rejected`.
+- Pete, with `INBOUND_ENABLED=false` or no Pete agent: the same NO_INCOMING_LINE. Pete while another call is live,
+  over the spend cap or with the phone session offline: "Hi Pete. Jasmine can't pick up right now…". Audit
+  `inbound.turned_away` with the code.
+- Pete, otherwise: a calls row with `direction = 'inbound'` (migration 009; `to_e164` = the caller, `from_e164` =
+  our number), `private = 1`, brain jasmine, Pete agent, `agent_id 'inbound'`, purpose "Pete called in". call.start
+  goes to the host (`direction: 'inbound'`) while the server registers the call with ElevenLabs (`direction: inbound`);
+  Pete hears ringing for up to `INBOUND_WARM_WAIT_S` (8s) and then it answers whether or not the session said ready.
+  From there it is the same as an outbound Pete call: PETE_OPENER, code phrase, tiers, filter, hard stops, delete +
+  scrub after the call.
+- Caller ID can be spoofed. A spoofed call gets the Pete opener and the public tier only; the personal tier still needs
+  the phrase. Twilio's STIR/SHAKEN result is kept on the `inbound` event (`stir_verstat`).
+- Length: Twilio has no TimeLimit on inbound, so a server timer hangs up at MAX_CALL_SECONDS and the watchdog backs it
+  up. The watchdog also polls Twilio for live inbound calls, since they have no `?call=` status callback. If the
+  number's own status callback points at `/phone/twilio/status`, it is matched by CallSid.

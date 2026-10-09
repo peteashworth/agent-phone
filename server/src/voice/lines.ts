@@ -19,6 +19,10 @@ export function openerFor(contact?: { name?: string | null; known?: number | boo
  * Pete himself.
  */
 export const PETE_OPENER = "Hey Pete, it's Jasmine."
+/** Inbound, anyone who isn't put through (and Pete while inbound is off). Says nothing about who or what is behind it. */
+export const NO_INCOMING_LINE = "This line doesn't take incoming calls. Goodbye."
+/** Inbound, Pete when the line is busy, over a spend cap, or the phone session is offline. */
+export const PETE_UNAVAILABLE_LINE = "Hi Pete. Jasmine can't pick up right now. Try again in a little while."
 
 /** The guard: an opener without the recording notice is never spoken. */
 export const withRecordingNotice = (line: string) => /\bbeing recorded\b/i.test(line) ? line : DISCLOSURE

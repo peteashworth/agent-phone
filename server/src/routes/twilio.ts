@@ -1,12 +1,10 @@
 // Twilio webhooks: call status callbacks + inbound voice on our owned number.
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Deps } from '../calls.ts'
-import { applyTwilioStatus, getCall } from '../calls.ts'
+import { applyTwilioStatus, getCall, callBySid } from '../calls.ts'
 import { applyAmd, notifyDashboard } from '../postcall.ts'
-import { inboundAllowed } from '../numbers.ts'
+import { handleInbound } from '../inbound.ts'
 import { safeEqual, twilioSignature } from '../auth.ts'
-import { audit } from '../db.ts'
-import { toE164 } from '../phone.ts'
 
 type Form = Record<string, string>
 
@@ -31,7 +29,9 @@ export async function twilioRoutes(app: FastifyInstance, d: Deps) {
 
   app.post('/twilio/status', async (req, reply) => {
     if (!verified(req)) return reply.code(403).send('forbidden')
-    const id = (req.query as Form).call
+    // ?call= on outbound; inbound calls arrive via the number's status callback (no ?call=), matched by CallSid.
+    const sid = (req.body as Form).CallSid
+    const id = (req.query as Form).call ?? (sid ? callBySid(db, sid)?.id : undefined)
     if (!id || !applyTwilioStatus(db, id, req.body as Form)) req.log.warn({ id }, 'status callback for unknown call')
     else notifyDashboard(d)
     return reply.code(204).send()
@@ -52,16 +52,11 @@ export async function twilioRoutes(app: FastifyInstance, d: Deps) {
     return reply.code(204).send()
   })
 
-  // Inbound to our owned number: allow-listed contacts hear a short notice; everyone else is rejected unanswered.
+  // Inbound to our owned number: Pete's numbers reach the Pete agent (src/inbound.ts); everyone else hears a fixed line.
   app.post('/twilio/voice', async (req, reply) => {
     if (!verified(req)) return reply.code(403).send('forbidden')
-    const p = req.body as Form
-    const from = toE164(p.From ?? '') ?? p.From ?? 'unknown'
-    const ok = from !== 'unknown' && inboundAllowed(db, from)
-    audit(db, 'twilio', ok ? 'inbound.allowed' : 'inbound.rejected', from, { to: p.To, sid: p.CallSid })
-    reply.type('text/xml')
-    return ok
-      ? '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Hi Pete. This line does not take incoming calls yet. Goodbye.</Say><Hangup/></Response>'
-      : '<?xml version="1.0" encoding="UTF-8"?><Response><Reject reason="rejected"/></Response>'
+    const r = await handleInbound(d, req.body as Form)
+    if (r.callId) { req.log.info({ call: r.callId }, 'inbound call'); notifyDashboard(d) }
+    return reply.type('text/xml').send(r.twiml)
   })
 }

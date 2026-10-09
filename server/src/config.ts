@@ -119,6 +119,12 @@ const schema = z.object({
   CHECKIN_QUIET_H: z.coerce.number().min(0).max(24).default(2),
   // Twilio Timeout: how long it rings before giving up. One ring, no redial.
   CHECKIN_RING_S: z.coerce.number().int().min(10).max(60).default(25),
+  // Inbound (docs/pete-tier.md): Pete's numbers (PERSONAL_OK_NUMBERS + contact inbound_allowed) reach the Pete agent.
+  INBOUND_ENABLED: bool,
+  // How long Pete's call waits (ringing) for the phone session to say ready before it's answered anyway.
+  INBOUND_WARM_WAIT_S: z.coerce.number().min(0).max(12).default(8),
+  // Everyone else: message = answer, say NO_INCOMING_LINE, hang up; reject = don't answer.
+  INBOUND_OTHERS: z.enum(['message', 'reject']).default('message'),
 
   TWILIO_API_BASE: z.url().default('https://api.twilio.com'),
   ELEVENLABS_API_BASE: z.url().default('https://api.elevenlabs.io'),

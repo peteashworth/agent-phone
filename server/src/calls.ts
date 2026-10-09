@@ -43,6 +43,8 @@ export type CallRow = {
   code_asked: number; code_attempts: number; notes: string | null; brain_seq: number
   private: number; el_agent_id: string | null; el_deleted_at: string | null; scrubbed_at: string | null
   checkin: number
+  /** inbound: to_e164 is the caller, from_e164 our number. */
+  direction: 'outbound' | 'inbound'
 }
 
 /** A refusal the caller should see verbatim (not a server fault). */
@@ -184,6 +186,7 @@ export function callStartPayload(d: Deps, call: CallRow) {
     has_brief_personal: !!call.has_brief_personal,
     private: !!call.private, // Pete agent: not recorded, deleted after the call
     checkin: !!call.checkin, // just checking in: short, no agenda beyond the brief
+    direction: call.direction ?? 'outbound', // inbound: Pete called us; "callee" is the caller
     disclosure: call.private ? PETE_OPENER : openerFor(contact), // what the callee heard first
     rules: { max_seconds: call.max_seconds, tier: 'public', style: 'spoken prose, 1-3 sentences, no markdown/emoji/URLs' },
   }
@@ -267,7 +270,17 @@ export async function watchdog(d: Deps): Promise<string[]> {
   for (const call of live) {
     const overdue = at - Date.parse(call.created_at) > (call.max_seconds + WATCHDOG_GRACE_S) * 1000
     const stuckHangup = !!call.hangup_requested_at && at - Date.parse(call.hangup_requested_at) > HANGUP_RETRY_S * 1000
-    if (!overdue && !stuckHangup) continue
+    if (!overdue && !stuckHangup) {
+      // Inbound calls have no per-call status callback: ask Twilio each tick so the line frees up when Pete hangs up.
+      if (call.direction === 'inbound' && call.twilio_sid) {
+        try {
+          const tw = await d.twilio.fetchCall(call.twilio_sid)
+          if (TERMINAL.has(tw.status) && applyTwilioStatus(d.db, call.id,
+            { CallSid: call.twilio_sid, CallStatus: tw.status, ...(tw.duration != null ? { CallDuration: String(tw.duration) } : {}) })) acted.push(call.id)
+        } catch (e) { event(d.db, call.id, 'server', 'watchdog_error', { error: (e as Error).message }) }
+      }
+      continue
+    }
     acted.push(call.id)
     if (!call.twilio_sid) {
       run(d.db, "UPDATE calls SET status = 'failed', error = 'watchdog: never reached Twilio', ended_at = ? WHERE id = ?", now(), call.id)
@@ -322,6 +335,11 @@ export function applyTwilioStatus(db: DB, id: string, p: Record<string, string>)
     run(db, 'UPDATE calls SET status = ?, twilio_sid = COALESCE(twilio_sid, ?) WHERE id = ?', status, p.CallSid ?? null, id)
   }
   return true
+}
+
+/** Status callbacks without ?call= (the number-level callback for inbound calls): find the call by CallSid. */
+export function callBySid(db: DB, sid: string): CallRow | undefined {
+  return one<CallRow>(db, 'SELECT * FROM calls WHERE twilio_sid = ?', sid)
 }
 
 export function getCall(db: DB, id: string): CallRow | undefined {
