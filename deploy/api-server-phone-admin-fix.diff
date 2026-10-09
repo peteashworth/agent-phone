@@ -1,0 +1,89 @@
+FIX for deploy/api-server-phone-admin.diff (Add contact / any save -> 401 "unauthorized").
+
+Cause: the phone-admin block was placed inside the `if (req.method === 'GET') {` section, so only GETs
+(whoami, lists) reached it. POST/PATCH fell through to the `if (req.method === 'POST' || ...)` section, whose
+jasmine-local Bearer check answered 401 "unauthorized" before the droplet was ever asked.
+
+Fix: move the same block (unchanged logic, 2 spaces less indent) to just BEFORE `if (req.method === 'GET') {`,
+right after `const headers = { ...CORS, 'Content-Type': 'application/json' }` and the ollama-shim comment.
+Apply on top of the already-applied admin diff:
+  git apply deploy/api-server-phone-admin-fix.diff     (or move the block by hand)
+Then restart the jasmine-dashboard unit. No droplet change, no dashboard rebuild.
+
+Tested by running the patched api-server.js against a local phone server: whoami 200, POST contacts 200, PATCH
+contacts/%2B... 200, PATCH settings 200, no key 401 "admin key required", POST /api/tasks without jasmine-local
+still 401. The old placement reproduced the bug (POST/PATCH -> 401 "unauthorized").
+
+--- a/api-server.js
++++ b/api-server.js
+@@ -344,6 +344,35 @@
+   // The old in-container version wrote inbound.db directly and flipped it to WAL,
+   // which silently dropped every inbound Telegram message (outage 2026-09-11).
+ 
++  // /api/phone-admin/{contacts[/:phone],settings,audit,whoami} → droplet /phone/admin/… (GET, POST, PATCH).
++  // Bearer = the X-Phone-Admin header from Pete's browser. Not stored, not logged.
++  // Sits before the GET/POST split: the POST/PATCH section requires the jasmine-local Bearer, which this route must not need.
++  const phoneAdminMatch = url.pathname.match(/^\/api\/phone-admin\/(contacts(?:\/%2B\d{6,15}|\/\+\d{6,15})?|settings|audit|whoami)$/)
++  if (phoneAdminMatch) {
++    const adminKey = req.headers['x-phone-admin']
++    if (typeof adminKey !== 'string' || !/^aph_a_[\w-]{10,200}$/.test(adminKey)) {
++      res.writeHead(401, headers); res.end(JSON.stringify({ error: 'admin key required' })); return
++    }
++    if (!['GET', 'POST', 'PATCH'].includes(req.method)) { res.writeHead(405, headers); res.end(JSON.stringify({ error: 'method not allowed' })); return }
++    const target = `${PHONE_API_URL}/admin/${phoneAdminMatch[1]}${url.search}`
++    let body = ''
++    req.on('data', c => { body += c; if (body.length > 65536) req.destroy() })
++    req.on('end', () => {
++      const init = { method: req.method, headers: { authorization: `Bearer ${adminKey}` }, signal: AbortSignal.timeout(15000) }
++      if (req.method !== 'GET') { init.headers['content-type'] = 'application/json'; init.body = body || '{}' }
++      fetch(target, init)
++        .then(async r => {
++          res.writeHead(r.status, { ...CORS, 'Content-Type': r.headers.get('content-type') || 'application/json', 'Cache-Control': 'no-store' })
++          res.end(Buffer.from(await r.arrayBuffer()))
++        })
++        .catch(e => {
++          if (!res.headersSent) res.writeHead(502, headers)
++          res.end(JSON.stringify({ error: 'phone service unreachable', detail: e.message }))
++        })
++    })
++    return
++  }
++
+   if (req.method === 'GET') {
+     // Serve tasks from SQLite (always fresh, overrides static file)
+     if (url.pathname === '/data/tasks.json') {
+@@ -519,34 +548,6 @@
+       return
+     }
+ 
+-    // /api/phone-admin/{contacts[/:phone],settings,audit,whoami} → droplet /phone/admin/… (GET, POST, PATCH).
+-    // Bearer = the X-Phone-Admin header from Pete's browser. Not stored, not logged.
+-    const phoneAdminMatch = url.pathname.match(/^\/api\/phone-admin\/(contacts(?:\/%2B\d{6,15}|\/\+\d{6,15})?|settings|audit|whoami)$/)
+-    if (phoneAdminMatch) {
+-      const adminKey = req.headers['x-phone-admin']
+-      if (typeof adminKey !== 'string' || !/^aph_a_[\w-]{10,200}$/.test(adminKey)) {
+-        res.writeHead(401, headers); res.end(JSON.stringify({ error: 'admin key required' })); return
+-      }
+-      if (!['GET', 'POST', 'PATCH'].includes(req.method)) { res.writeHead(405, headers); res.end(JSON.stringify({ error: 'method not allowed' })); return }
+-      const target = `${PHONE_API_URL}/admin/${phoneAdminMatch[1]}${url.search}`
+-      let body = ''
+-      req.on('data', c => { body += c; if (body.length > 65536) req.destroy() })
+-      req.on('end', () => {
+-        const init = { method: req.method, headers: { authorization: `Bearer ${adminKey}` }, signal: AbortSignal.timeout(15000) }
+-        if (req.method !== 'GET') { init.headers['content-type'] = 'application/json'; init.body = body || '{}' }
+-        fetch(target, init)
+-          .then(async r => {
+-            res.writeHead(r.status, { ...CORS, 'Content-Type': r.headers.get('content-type') || 'application/json', 'Cache-Control': 'no-store' })
+-            res.end(Buffer.from(await r.arrayBuffer()))
+-          })
+-          .catch(e => {
+-            if (!res.headersSent) res.writeHead(502, headers)
+-            res.end(JSON.stringify({ error: 'phone service unreachable', detail: e.message }))
+-          })
+-      })
+-      return
+-    }
+-
+     const match = url.pathname.match(/^\/api\/(\w+)$/)
+     if (match) {
+       const data = readData(match[1])
