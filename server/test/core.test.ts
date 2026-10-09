@@ -11,7 +11,6 @@ describe('config', () => {
   it('defaults are safe', () => {
     const c = loadConfig({})
     expect(c.DIALING_ENABLED).toBe(false)
-    expect(c.ALLOWED_DESTINATIONS).toEqual(['+14358403707'])
     expect(c.MAX_CALL_SECONDS).toBe(300)
   })
   it('blank values count as unset', () => {

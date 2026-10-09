@@ -37,7 +37,8 @@ Check: `curl https://jasmine.ashworthhub.com/phone/health` → `{"ok":true,"dial
 
 MCP endpoint: `https://jasmine.ashworthhub.com/phone/mcp` (Streamable HTTP, `Authorization: Bearer <key>`).
 
-Safety: `DIALING_ENABLED=false` makes every call a dry run. `ALLOWED_DESTINATIONS` limits who can be dialed.
+Safety: `DIALING_ENABLED=false` makes every call a dry run. Only contacts marked **allowed** can be dialed (max 25,
+no wildcards); Pete manages them on the dashboard Calls page. See docs/admin.md.
 
 ## Milestone D: Jasmine as the phone brain (BRAIN=jasmine)
 

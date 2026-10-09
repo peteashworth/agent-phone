@@ -5,6 +5,7 @@ import { type DB, one, all, run, audit } from './db.ts'
 import { toE164 } from './phone.ts'
 import { fromFor } from './numbers.ts'
 import { dialChecks } from './safety.ts'
+import { effective } from './settings.ts'
 import type { ElevenLabsClient } from './voice/elevenlabs.ts'
 import type { TwilioClient } from './voice/twilio.ts'
 import type { Brain } from './voice/brain.ts'
@@ -56,7 +57,7 @@ const clock = (d: Deps) => (d.clock ?? (() => new Date()))()
  * one-time confirm_token that confirm_call must present (after Pete OKs it) before anything dials.
  */
 export async function placeCall(d: Deps, agentId: string, input: PlaceCallInput): Promise<CallRow & { confirm_token?: string }> {
-  const { config: c, db } = d
+  const { db } = d, c = effective(d.config, db)
   const refuse = (code: string, msg: string, target: string | null): never => {
     audit(db, agentId, 'call.refused', target, { code, msg, purpose: input.purpose })
     throw new CallRefused(code, msg)
@@ -123,7 +124,7 @@ export async function confirmCall(d: Deps, agentId: string, token: string): Prom
 }
 
 async function startCall(d: Deps, id: string): Promise<CallRow> {
-  const { config: c, db } = d
+  const { db } = d, c = effective(d.config, db)
   const call = getCall(db, id)!
   const dry = !!call.dry_run || !c.DIALING_ENABLED
   // Synchronous check-then-claim: nothing awaits between the live-call check and status='queued'.
@@ -189,7 +190,7 @@ async function warmThenDial(d: Deps, id: string, jobId: string): Promise<void> {
     return
   }
   // Time has passed (up to WARM_TIMEOUT_S): check again before dialing. The live-call check skips this call itself.
-  const bad = dialChecks(c, db, call.to_e164, false, clock(d), id)
+  const bad = dialChecks(effective(c, db), db, call.to_e164, false, clock(d), id)
   if (bad) {
     run(db, "UPDATE calls SET status = 'refused', error = ?, ended_at = ? WHERE id = ?", `${bad.code}: ${bad.message}`, now(), id)
     audit(db, call.agent_id, 'call.refused', id, bad)

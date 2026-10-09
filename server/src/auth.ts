@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual, createHmac } from 'node:crypto'
 import { type DB, one, run, audit } from './db.ts'
 
-export type Scope = 'agent' | 'read' | 'brain'
+export type Scope = 'agent' | 'read' | 'brain' | 'admin'
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
 /** Creates a bearer key. The plaintext is returned once and never stored. */
@@ -21,11 +21,15 @@ export function revokeKey(db: DB, prefix: string): boolean {
 
 /** Resolves "Bearer <key>" to the agent id, or null. */
 export function authenticate(db: DB, header: string | undefined, scope: Scope): string | null {
+  return authenticateKey(db, header, scope)?.agent_id ?? null
+}
+
+/** Same, with the key prefix (admin audit lines name the key, so a leaked one can be traced and revoked). */
+export function authenticateKey(db: DB, header: string | undefined, scope: Scope): { agent_id: string; prefix: string } | null {
   const m = /^Bearer\s+(\S+)$/i.exec(header ?? '')
   if (!m) return null
-  const row = one<{ agent_id: string }>(db,
-    'SELECT agent_id FROM agent_keys WHERE hash = ? AND scope = ? AND revoked_at IS NULL', sha256(m[1]), scope)
-  return row?.agent_id ?? null
+  return one<{ agent_id: string; prefix: string }>(db,
+    'SELECT agent_id, prefix FROM agent_keys WHERE hash = ? AND scope = ? AND revoked_at IS NULL', sha256(m[1]), scope) ?? null
 }
 
 export function safeEqual(a: string, b: string): boolean {

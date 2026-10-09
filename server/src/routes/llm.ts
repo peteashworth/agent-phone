@@ -14,6 +14,7 @@ import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptio
 import type { FilterOptions } from '../voice/outputFilter.ts'
 import { awaitHuman, applyGreeting, isMachine } from '../postcall.ts'
 import { DISCLOSURE } from '../voice/lines.ts'
+import { effective } from '../settings.ts'
 
 type Body = { model?: string; messages?: ChatMessage[]; stream?: boolean }
 
@@ -115,7 +116,8 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         log = new TurnLog(d, now, kind, 'voicemail')
         req.log.info({ call: now.id, answered_by: now.answered_by }, 'voicemail')
         if (c.VOICEMAIL_ACTION === 'message') {
-          source = (async function* () { yield c.VOICEMAIL_LINE })()
+          const line = effective(c, db).VOICEMAIL_LINE
+          source = (async function* () { yield line })()
           void hangup(d, now.id, 'voicemail', c.HANGUP_DELAY_MS)
         } else {
           source = (async function* () {})() // already hanging up; say nothing

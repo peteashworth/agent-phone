@@ -16,8 +16,9 @@ const schema = z.object({
 
   // Master switch. false = every place_call is a dry run, whatever the caller asks for.
   DIALING_ENABLED: bool,
-  // Destination guard (standing rule: Pete only until hard stops are built + signed off). "*" lifts it.
-  ALLOWED_DESTINATIONS: list.default(['+14358403707']),
+  // LEGACY. The allowlist is contacts.allowed now (dashboard / CLI). This is read once, on the first boot after migration
+  // 005, to seed it (unset = Pete only, the old default); after that it is ignored and can be deleted from the env.
+  ALLOWED_DESTINATIONS: z.string().optional(),
   MAX_CALL_SECONDS: z.coerce.number().int().min(30).max(600).default(300),
 
   // ---- Milestone B safety layer

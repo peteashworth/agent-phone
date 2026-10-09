@@ -9,7 +9,8 @@ import { setup, LIVE_ENV } from './helpers.ts'
 
 const PETE = '+14358403707', OTHER = '+14352419384'
 const req = { to: PETE, purpose: 'test', brief: 'say hi' }
-const OPEN = { ...LIVE_ENV, ALLOWED_DESTINATIONS: '*' }
+// Live dialing with OTHER on the allowlist (an untrusted contact).
+const open = () => { const d = setup(LIVE_ENV); run(d.db, "INSERT INTO contacts (e164, name, allowed) VALUES (?, 'Other', 1)", OTHER); return d }
 
 describe('calling hours', () => {
   it('unknown zone must fit both US coasts', () => {
@@ -73,7 +74,7 @@ describe('spend caps', () => {
 
 describe('confirm before dial', () => {
   it('non-trusted contacts wait for confirm_call; nothing dials before', async () => {
-    const d = setup(OPEN)
+    const d = open()
     const c = await placeCall(d, 'jasmine', { ...req, to: OTHER, dry_run: false })
     expect(c.status).toBe('awaiting_confirmation')
     expect(c.confirm_token).toMatch(/^cfm_/)
@@ -86,7 +87,7 @@ describe('confirm before dial', () => {
     await expect(confirmCall(d, 'jasmine', c.confirm_token!)).rejects.toMatchObject({ code: 'invalid_token' }) // single use
   })
   it('tokens expire', async () => {
-    const d = setup(OPEN)
+    const d = open()
     const c = await placeCall(d, 'jasmine', { ...req, to: OTHER, dry_run: false })
     d.now.t = new Date(d.now.t.getTime() + 16 * 60_000)
     await expect(confirmCall(d, 'jasmine', c.confirm_token!)).rejects.toMatchObject({ code: 'token_expired' })
@@ -94,9 +95,9 @@ describe('confirm before dial', () => {
     expect(d.dials).toHaveLength(0)
   })
   it('re-checks at confirmation (opted out in between)', async () => {
-    const d = setup(OPEN)
+    const d = open()
     const c = await placeCall(d, 'jasmine', { ...req, to: OTHER, dry_run: false })
-    run(d.db, 'INSERT INTO contacts (e164, name, do_not_call) VALUES (?, ?, 1)', OTHER, 'X')
+    run(d.db, 'UPDATE contacts SET do_not_call = 1 WHERE e164 = ?', OTHER)
     await expect(confirmCall(d, 'jasmine', c.confirm_token!)).rejects.toMatchObject({ code: 'do_not_call' })
     expect(getCall(d.db, c.id)!.status).toBe('refused')
     expect(d.dials).toHaveLength(0)

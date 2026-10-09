@@ -71,8 +71,9 @@ export function checkLiveCall(db: DB, exceptId = ''): Refusal | null {
 export function checkDestination(c: Config, db: DB, to: string): Refusal | null {
   if (one(db, 'SELECT 1 FROM contacts WHERE e164 = ? AND do_not_call = 1', to))
     return { code: 'do_not_call', message: `${to} is on the do-not-call list` }
-  if (!c.ALLOWED_DESTINATIONS.includes('*') && !c.ALLOWED_DESTINATIONS.includes(to))
-    return { code: 'destination_not_allowed', message: `Calls to ${to} are not allowed yet (allowed: ${c.ALLOWED_DESTINATIONS.join(', ')})` }
+  // The allowlist: an explicit per-contact flag, set by Pete (dashboard admin key or CLI). No wildcards.
+  if (!one(db, 'SELECT 1 FROM contacts WHERE e164 = ? AND allowed = 1', to))
+    return { code: 'destination_not_allowed', message: `${to} is not on the allowed list (Pete can allow it on the dashboard Calls page)` }
   return null
 }
 
