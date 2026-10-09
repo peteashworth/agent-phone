@@ -12,7 +12,7 @@ import { OutputFilter } from '../voice/outputFilter.ts'
 import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '../voice/brain.ts'
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine, alreadySaid, takeContinuation } from '../voice/brainTurn.ts'
 import type { FilterOptions } from '../voice/outputFilter.ts'
-import { awaitHuman, applyGreeting, isMachine } from '../postcall.ts'
+import { awaitHuman, applyGreeting, isMachine, voicemailAction } from '../postcall.ts'
 import { openerFor, PETE_OPENER, NOTICE_LINE, EXIT_LINE, noticeHeard, speakMs } from '../voice/lines.ts'
 import { effective } from '../settings.ts'
 
@@ -147,7 +147,7 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       if (now && isMachine(now.answered_by)) {
         log = new TurnLog(d, now, kind, 'voicemail')
         req.log.info({ call: now.id, answered_by: now.answered_by }, 'voicemail')
-        if (c.VOICEMAIL_ACTION === 'message') {
+        if (voicemailAction(c, now) === 'message') {
           const line = effective(c, db).VOICEMAIL_LINE
           source = (async function* () { yield line })()
           void hangup(d, now.id, 'voicemail', c.HANGUP_DELAY_MS)

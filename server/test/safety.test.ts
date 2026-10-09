@@ -223,3 +223,80 @@ describe('hangup + watchdog', () => {
     expect(getContact(d.db, OTHER)).toMatchObject({ do_not_call: 1, trusted: 0 })
   })
 })
+
+describe('check-ins (Pete only)', () => {
+  const CHECKIN = { ...req, purpose: 'check-in', checkin: true, dry_run: false, brain: 'canned' as const }
+  const live = (env: Record<string, string> = {}) => setup({ ...LIVE_ENV, ELEVENLABS_PETE_AGENT_ID: 'agent_pete', AMD_ENABLED: 'false', ...env })
+  /** Place a call at a Mountain-time instant, then mark it ended (created/ended pinned to the test clock). */
+  async function callAt(d: ReturnType<typeof live>, iso: string, input: object = CHECKIN, status = 'completed') {
+    d.now.t = new Date(iso)
+    const c = await placeCall(d, 'jasmine', input as typeof CHECKIN)
+    run(d.db, 'UPDATE calls SET status = ?, created_at = ?, ended_at = ? WHERE id = ?', status, iso,
+      new Date(Date.parse(iso) + 60_000).toISOString(), c.id)
+    return c
+  }
+  const refusal = (d: ReturnType<typeof live>, iso: string, input: object = CHECKIN) => {
+    d.now.t = new Date(iso)
+    return placeCall(d, 'jasmine', input as typeof CHECKIN).then(() => null, (e: { code: string }) => e.code)
+  }
+
+  it('only for Pete\'s number, and only with the Pete agent', async () => {
+    const d = open()
+    expect(await refusal(d, '2026-10-08T18:00:00Z', { ...CHECKIN, to: OTHER })).toBe('checkin_not_allowed')
+    expect(await refusal(d, '2026-10-08T18:00:00Z')).toBe('checkin_not_allowed') // no ELEVENLABS_PETE_AGENT_ID
+  })
+  it('rings once for CHECKIN_RING_S, through the Pete agent, flagged for the host', async () => {
+    const d = live()
+    const c = await callAt(d, '2026-10-08T18:00:00Z')
+    expect(getCall(d.db, c.id)).toMatchObject({ checkin: 1, private: 1, el_agent_id: 'agent_pete', dry_run: 0 })
+    expect(d.dials[0].ringS).toBe(25)
+    await callAt(d, '2026-10-08T18:00:00Z', { ...req, dry_run: false }) // ordinary call: Twilio's default ring
+    expect(d.dials[1].ringS).toBeUndefined()
+  })
+  it('own window, 9am-9pm Mountain, in place of the general calling hours', async () => {
+    const d = live()
+    expect(await refusal(d, '2026-10-08T14:30:00Z')).toBe('outside_checkin_hours') // 8:30am MT
+    expect(await refusal(d, '2026-10-09T03:00:00Z')).toBe('outside_checkin_hours') // 9pm MT
+    expect(await refusal(d, '2026-10-09T02:30:00Z', { ...req, dry_run: false })).toBe('outside_calling_hours') // 8:30pm, ordinary
+    expect(await refusal(d, '2026-10-09T02:30:00Z')).toBeNull() // 8:30pm, check-in
+  })
+  it('max 2 a day (missed ones count), at least 4h apart; a new Denver day resets', async () => {
+    const d = live()
+    await callAt(d, '2026-10-08T15:30:00Z', CHECKIN, 'no-answer') // 9:30am MT, missed
+    expect(await refusal(d, '2026-10-08T19:00:00Z')).toBe('checkin_too_soon') // 1pm
+    await callAt(d, '2026-10-08T19:31:00Z') // 1:31pm
+    expect(await refusal(d, '2026-10-09T02:00:00Z')).toBe('checkin_cap') // 8pm
+    expect(await refusal(d, '2026-10-09T15:05:00Z')).toBeNull() // 9:05am next day
+  })
+  it('a refused or unconfirmed check-in never counts', async () => {
+    const d = live()
+    await callAt(d, '2026-10-08T15:30:00Z', CHECKIN, 'refused')
+    run(d.db, 'UPDATE calls SET twilio_sid = NULL')
+    expect(await refusal(d, '2026-10-08T16:00:00Z')).toBeNull()
+  })
+  it('not within 2h after any other call with him', async () => {
+    const d = live()
+    await callAt(d, '2026-10-08T18:00:00Z', { ...req, dry_run: false }) // ends 12:01pm MT
+    expect(await refusal(d, '2026-10-08T19:30:00Z')).toBe('checkin_quiet')
+    expect(await refusal(d, '2026-10-08T20:02:00Z')).toBeNull()
+  })
+  it('pause switch (settings, as the dashboard and CLI save it); ordinary calls unaffected', async () => {
+    const { saveSettings } = await import('../src/settings.ts')
+    const d = live()
+    saveSettings(d.config, d.db, 'pete', { CHECKINS_PAUSED: true })
+    expect(await refusal(d, '2026-10-08T18:00:00Z')).toBe('checkins_paused')
+    expect(await refusal(d, '2026-10-08T18:00:00Z', { ...req, dry_run: true })).toBeNull()
+    saveSettings(d.config, d.db, 'pete', { CHECKINS_PAUSED: false })
+    expect(await refusal(d, '2026-10-08T18:00:00Z')).toBeNull()
+  })
+  it('voicemail: hang up with no message, even with VOICEMAIL_ACTION=message', async () => {
+    const { applyAmd } = await import('../src/postcall.ts')
+    const d = live({ VOICEMAIL_ACTION: 'message' })
+    d.now.t = new Date('2026-10-08T18:00:00Z')
+    const c = await placeCall(d, 'jasmine', CHECKIN)
+    applyTwilioStatus(d.db, c.id, { CallSid: 'CAtest1', CallStatus: 'in-progress' })
+    await applyAmd(d, c.id, 'machine_start')
+    expect(d.ended).toEqual(['CAtest1'])
+    expect(getCall(d.db, c.id)!.end_reason).toBe('voicemail')
+  })
+})

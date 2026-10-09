@@ -4,7 +4,7 @@ import { loadConfig } from './config.ts'
 import { type DB, openDb, migrate, one, run, all, audit, tx } from './db.ts'
 import { createKey, revokeKey, type Scope } from './auth.ts'
 import { updateContact, adminSetContact } from './contacts.ts'
-import { bootstrapAllowlist } from './settings.ts'
+import { bootstrapAllowlist, saveSettings } from './settings.ts'
 import { brainStatus } from './brainJobs.ts'
 
 /** Idempotent baseline: Pete's caller IDs, the caller-ID rule, Pete as trusted + allowed contact, agents 'jasmine' and 'pete' (admin). */
@@ -37,7 +37,8 @@ const USAGE = `usage: node src/cli.ts <command>
   contact:add <phone> <name>                    new contact (not allowed, not trusted)
   contacts                        list contacts
   contact:tz <phone> <IANA zone|none>           e.g. America/Denver; none = unknown (window must fit both US coasts)
-  numbers                         show numbers + caller-ID rules`
+  numbers                         show numbers + caller-ID rules
+  checkins:pause | checkins:resume              stop / allow check-in calls (same switch as the dashboard Limits tab)`
 
 async function main(argv: string[]) {
   const [cmd, ...args] = argv
@@ -80,6 +81,9 @@ async function main(argv: string[]) {
       console.log(adminSetContact(db, 'cli', phone, { name: name.join(' ') })); break
     }
     case 'contacts': console.table(all(db, 'SELECT e164, name, allowed, trusted, known, do_not_call, inbound_allowed, tz FROM contacts ORDER BY name')); break
+    case 'checkins:pause': case 'checkins:resume':
+      saveSettings(config, db, 'cli', { CHECKINS_PAUSED: cmd === 'checkins:pause' })
+      console.log(cmd === 'checkins:pause' ? 'check-ins paused' : 'check-ins allowed'); break
     case 'contact:tz': {
       const [phone, tz] = args
       if (!phone || !tz) throw new Error(USAGE)

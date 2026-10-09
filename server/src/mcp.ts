@@ -24,7 +24,7 @@ function view(c: CallRow) {
     brain: c.brain ?? undefined, tier: c.brain === 'jasmine' ? c.tier : undefined,
     has_brief_personal: c.has_brief_personal ? true : undefined,
     notes: c.notes ? JSON.parse(c.notes) as string[] : undefined,
-    private: c.private ? true : undefined, scrubbed: c.scrubbed_at ? true : undefined,
+    private: c.private ? true : undefined, checkin: c.checkin ? true : undefined, scrubbed: c.scrubbed_at ? true : undefined,
   }
 }
 
@@ -57,6 +57,9 @@ export function buildMcpServer(d: Deps, agentId: string): McpServer {
         .describe('Personal context, given to the phone session only after the callee says the code phrase. jasmine brain, Pete only.'),
       facts: z.array(z.string().max(64)).max(50).optional()
         .describe('Fact ids or topics from the server facts file this call may use. Share rules (anyone/code/never) still apply.'),
+      checkin: z.boolean().optional()
+        .describe('A short check-in with Pete (his number only). Own rules: 9am-9pm Mountain, max 2 a day, 4h apart, not within 2h ' +
+          'of another call with him, pausable by Pete. Rings once (~25s), never redials, never leaves a voicemail.'),
     },
     annotations: { destructiveHint: true, openWorldHint: true, idempotentHint: false },
   }, guard(async a => {

@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { type Deps, type CallRow, getCall, hangup, event, LIVE_STATUSES } from './calls.ts'
 import { all, one, run, audit } from './db.ts'
+import type { Config } from './config.ts'
 import { enqueueJob } from './brainJobs.ts'
 import { findPhrase, removePhrase } from './voice/codePhrase.ts'
 import { sha256 } from './voice/brainTurn.ts'
@@ -39,13 +40,17 @@ export async function applyAmd(d: Deps, id: string, answeredBy: string, source: 
   if (!isMachine(answeredBy) || !(LIVE_STATUSES as readonly string[]).includes(call.status)) return
   // Belt and braces: the brain only speaks after a verdict, but if it ever got there first, the person stays on.
   if (brainHasSpoken(d, id)) { event(d.db, id, source, 'amd_ignored', { answered_by: answeredBy, reason: 'brain_spoke' }); return }
-  audit(d.db, 'system', 'call.voicemail', id, { answered_by: answeredBy, action: d.config.VOICEMAIL_ACTION })
-  if (d.config.VOICEMAIL_ACTION === 'hangup') return hangup(d, id, 'voicemail', 0)
+  const action = voicemailAction(d.config, call)
+  audit(d.db, 'system', 'call.voicemail', id, { answered_by: answeredBy, action })
+  if (action === 'hangup') return hangup(d, id, 'voicemail', 0)
   // 'message': the next LLM turn speaks VOICEMAIL_LINE and hangs up; this is the backstop if no turn ever comes.
   run(d.db, "UPDATE calls SET end_reason = 'voicemail' WHERE id = ?", id)
   setTimeout(() => void hangup(d, id, 'voicemail', 0), VOICEMAIL_BACKSTOP_MS).unref()
 }
 const VOICEMAIL_BACKSTOP_MS = 20_000
+
+/** A check-in never leaves a message, whatever VOICEMAIL_ACTION says. */
+export const voicemailAction = (c: Config, call: Pick<CallRow, 'checkin'>) => (call.checkin ? 'hangup' : c.VOICEMAIL_ACTION)
 
 /** Ms past answer to wait for a verdict: Twilio's MachineDetectionTimeout plus a margin for the webhook. */
 const amdWaitMs = (d: Deps) => d.config.AMD_TIMEOUT_S * 1000 + 1500

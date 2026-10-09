@@ -34,5 +34,19 @@ Spec: Jasmine-nanoclaw/projects/phone-pete-tier-spec.md. This file records what 
 - Opt-out on Pete's number (any tier, Oct 9): ends the call with "Okay, I'll let you go. Bye." and never sets DNC
   (audit `dnc_skipped: pete`). Other numbers still go on DNC.
 
+## Check-ins (step 6)
+- `place_call` with `checkin: true`. Refused (`checkin_not_allowed`) unless the number is in PERSONAL_OK_NUMBERS and
+  the Pete agent is configured, so check-ins are always private calls. `calls.checkin = 1` (migration 008).
+- Window `CHECKIN_HOURS_START`–`END` (9–21) in `CHECKIN_TZ` (America/Denver). It replaces the general calling hours
+  for check-ins. Caps, do-not-call, one live call and the confirm rules still apply.
+- Max `CHECKIN_MAX_PER_DAY` (2) per local day and `CHECKIN_MIN_GAP_H` (4h) between check-ins. Only dialed calls count
+  (not dry runs or refusals), but a missed or declined check-in does count.
+- None within `CHECKIN_QUIET_H` (2h) of any other dialed call to him (from its end, or its start if still live).
+- One ring of `CHECKIN_RING_S` (25s, Twilio Timeout), never redials, and on voicemail hangs up with no message
+  whatever VOICEMAIL_ACTION says.
+- Pause: `CHECKINS_PAUSED` (dashboard Calls → Limits, `node src/cli.ts checkins:pause|resume`, or env). Refusal codes:
+  `checkins_paused`, `outside_checkin_hours`, `checkin_cap`, `checkin_too_soon`, `checkin_quiet`.
+- call.start to the host carries `checkin: true`.
+
 ## Not built yet
-- Check-ins (step 6) and inbound (step 7).
+- Inbound (step 7).

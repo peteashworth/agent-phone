@@ -5,6 +5,8 @@ export type Dial = {
   to: string; from: string; twiml: string; timeLimit: number; statusCallback: string
   /** Async answering-machine detection: Twilio posts AnsweredBy here while the call carries on. */
   amd?: { callback: string; timeoutS: number }
+  /** Seconds to ring before giving up (Twilio Timeout; Twilio's default is 60). */
+  ringS?: number
 }
 
 export type TwilioClient = {
@@ -43,6 +45,7 @@ export function twilioClient(c: Config, f: Fetch = fetch): TwilioClient {
         To: d.to, From: d.from, Twiml: d.twiml, TimeLimit: String(d.timeLimit),
         StatusCallback: d.statusCallback, StatusCallbackMethod: 'POST',
       })
+      if (d.ringS) form.set('Timeout', String(d.ringS))
       for (const e of ['initiated', 'ringing', 'answered', 'completed']) form.append('StatusCallbackEvent', e)
       if (d.amd) {
         form.set('MachineDetection', 'Enable'); form.set('AsyncAmd', 'true')

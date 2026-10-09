@@ -13,6 +13,7 @@ export const SETTINGS = {
   CALL_HOURS_START: { label: 'Calling hours start (local hour)', schema: z.number().int().min(7).max(21) },
   CALL_HOURS_END: { label: 'Calling hours end (local hour, exclusive)', schema: z.number().int().min(8).max(22) },
   CONFIRM_TTL_MIN: { label: 'Confirmation expires after (minutes)', schema: z.number().int().min(1).max(120) },
+  CHECKINS_PAUSED: { label: 'Pause check-in calls', schema: z.boolean() },
   VOICEMAIL_LINE: { label: 'Voicemail line', schema: z.string().trim().min(1).max(200).regex(/^[^\r\n]*$/, 'one line') },
 } as const
 export type SettingKey = keyof typeof SETTINGS

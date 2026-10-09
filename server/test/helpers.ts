@@ -23,7 +23,8 @@ export function setup(env: Record<string, string> = {}) {
   const elevenlabs: ElevenLabsClient = {
     async registerCall(r) {
       registered.push(r)
-      return { twiml: '<Response><Connect><Stream url="wss://x"><Parameter name="conversation_id" value="conv_test1"/></Stream></Connect></Response>', conversationId: 'conv_test1' }
+      const conv = `conv_test${registered.length}`
+      return { twiml: `<Response><Connect><Stream url="wss://x"><Parameter name="conversation_id" value="${conv}"/></Stream></Connect></Response>`, conversationId: conv }
     },
     async getConversation(id) { return conversations[id] ?? { status: 'processing' } },
     async getAudio(id) { if (!audio[id]) throw new Error('no audio'); return audio[id] },

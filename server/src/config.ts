@@ -108,6 +108,17 @@ const schema = z.object({
   ELEVENLABS_PETE_AGENT_ID: z.string().optional(),
   // Hours after a Pete-agent call is finalized before its spoken text is scrubbed from the droplet. 0 = right away.
   PERSONAL_RETENTION_HOURS: z.coerce.number().min(0).max(168).default(0),
+  // Check-ins (place_call checkin:true, Pete agent numbers only). Pause also lives in dashboard settings.
+  CHECKINS_PAUSED: bool,
+  CHECKIN_TZ: z.string().default('America/Denver'),
+  CHECKIN_HOURS_START: z.coerce.number().int().min(0).max(23).default(9),
+  CHECKIN_HOURS_END: z.coerce.number().int().min(1).max(24).default(21),
+  CHECKIN_MAX_PER_DAY: z.coerce.number().int().min(0).max(5).default(2),
+  CHECKIN_MIN_GAP_H: z.coerce.number().min(1).max(24).default(4),
+  // No check-in within this long after any other call with the same number ended (or started, if it never connected).
+  CHECKIN_QUIET_H: z.coerce.number().min(0).max(24).default(2),
+  // Twilio Timeout: how long it rings before giving up. One ring, no redial.
+  CHECKIN_RING_S: z.coerce.number().int().min(10).max(60).default(25),
 
   TWILIO_API_BASE: z.url().default('https://api.twilio.com'),
   ELEVENLABS_API_BASE: z.url().default('https://api.elevenlabs.io'),
@@ -129,6 +140,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     if (missing.length) throw new Error(`DIALING_ENABLED=true but missing: ${missing.join(', ')}`)
   }
   if (c.CALL_HOURS_END <= c.CALL_HOURS_START) throw new Error('CALL_HOURS_END must be after CALL_HOURS_START')
+  if (c.CHECKIN_HOURS_END <= c.CHECKIN_HOURS_START) throw new Error('CHECKIN_HOURS_END must be after CHECKIN_HOURS_START')
   if (c.BRAIN === 'openai' && (!c.BRAIN_URL || !c.BRAIN_MODEL)) throw new Error('BRAIN=openai needs BRAIN_URL and BRAIN_MODEL')
   // The message never echoes the phrase.
   if (c.CODE_PHRASE != null && phraseWords(c.CODE_PHRASE).length < 3) throw new Error('CODE_PHRASE must be at least 3 words (4+ uncommon words recommended)')

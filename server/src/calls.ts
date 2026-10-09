@@ -23,6 +23,8 @@ export type PlaceCallInput = {
   brain?: BrainKind
   /** Fact ids or topics from FACTS_FILE this call may use (share rules still apply). */
   facts?: string[]
+  /** A short check-in with Pete: Pete agent numbers only, own window/caps/gaps, one ring, no voicemail message. */
+  checkin?: boolean
 }
 
 export type CallRow = {
@@ -40,6 +42,7 @@ export type CallRow = {
   brain: BrainKind | null; brief_personal: string | null; has_brief_personal: number; facts: string | null; tier: 'public' | 'personal'
   code_asked: number; code_attempts: number; notes: string | null; brain_seq: number
   private: number; el_agent_id: string | null; el_deleted_at: string | null; scrubbed_at: string | null
+  checkin: number
 }
 
 /** A refusal the caller should see verbatim (not a server fault). */
@@ -81,12 +84,15 @@ export async function placeCall(d: Deps, agentId: string, input: PlaceCallInput)
     if (unknown.length) refuse('unknown_facts', `No fact with id or topic: ${unknown.join(', ')}`, to)
   }
 
+  if (input.checkin && (!c.ELEVENLABS_PETE_AGENT_ID || !c.PERSONAL_OK_NUMBERS.includes(to)))
+    refuse('checkin_not_allowed', 'Check-ins are only for Pete\'s own number, through the Pete agent (ELEVENLABS_PETE_AGENT_ID)', to)
+
   let fromLabel = '', fromE164 = ''
   try { ({ label: fromLabel, e164: fromE164 } = fromFor(db, to)) } catch (e) { refuse('no_caller_id', (e as Error).message, to) }
 
   // Real dial needs both the server switch and an explicit dry_run:false from the caller.
   const dry = input.dry_run !== false || !c.DIALING_ENABLED
-  const bad = dialChecks(c, db, to, dry, clock(d))
+  const bad = dialChecks(c, db, to, dry, clock(d), '', !!input.checkin)
   if (bad) refuse(bad.code, bad.message, to)
 
   const trusted = !!one(db, 'SELECT 1 FROM contacts WHERE e164 = ? AND trusted = 1', to)
@@ -96,15 +102,16 @@ export async function placeCall(d: Deps, agentId: string, input: PlaceCallInput)
   const token = trusted ? null : 'cfm_' + randomBytes(18).toString('base64url')
   const expires = new Date(clock(d).getTime() + c.CONFIRM_TTL_MIN * 60_000).toISOString()
   run(db, `INSERT INTO calls (id, agent_id, to_e164, from_e164, from_label, purpose, brief, plan, dry_run, status, max_seconds,
-                             confirm_hash, confirm_expires_at, brain, brief_personal, has_brief_personal, facts, private, el_agent_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             confirm_hash, confirm_expires_at, brain, brief_personal, has_brief_personal, facts, private, el_agent_id, checkin)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id, agentId, to, fromE164, fromLabel, input.purpose, input.brief, input.plan ?? null, dry ? 1 : 0,
     token ? 'awaiting_confirmation' : 'pending', c.MAX_CALL_SECONDS, token && sha256(token), token && expires,
     brain, input.brief_personal?.trim() || null, input.brief_personal?.trim() ? 1 : 0, factSel.length ? JSON.stringify(factSel) : null,
-    isPrivate ? 1 : 0, (isPrivate ? c.ELEVENLABS_PETE_AGENT_ID : c.ELEVENLABS_AGENT_ID) ?? null)
+    isPrivate ? 1 : 0, (isPrivate ? c.ELEVENLABS_PETE_AGENT_ID : c.ELEVENLABS_AGENT_ID) ?? null, input.checkin ? 1 : 0)
   // Fact ids only, never values; brief_personal only as a flag.
   audit(db, agentId, 'call.place', id, { to, from: fromLabel, dry, needs_confirmation: !trusted, brain,
-    facts: factSel, has_brief_personal: !!input.brief_personal?.trim(), ...(isPrivate ? { private: true } : {}) })
+    facts: factSel, has_brief_personal: !!input.brief_personal?.trim(), ...(isPrivate ? { private: true } : {}),
+    ...(input.checkin ? { checkin: true } : {}) })
 
   if (token) {
     event(db, id, 'server', 'awaiting_confirmation', { expires_at: expires })
@@ -133,7 +140,7 @@ async function startCall(d: Deps, id: string): Promise<CallRow> {
   const call = getCall(db, id)!
   const dry = !!call.dry_run || !c.DIALING_ENABLED
   // Synchronous check-then-claim: nothing awaits between the live-call check and status='queued'.
-  const bad = dialChecks(c, db, call.to_e164, dry, clock(d))
+  const bad = dialChecks(c, db, call.to_e164, dry, clock(d), '', !!call.checkin)
   if (bad) {
     run(db, "UPDATE calls SET status = 'refused', error = ? WHERE id = ?", `${bad.code}: ${bad.message}`, id)
     audit(db, call.agent_id, 'call.refused', id, bad)
@@ -176,6 +183,7 @@ export function callStartPayload(d: Deps, call: CallRow) {
     facts: factsFor(picked, 'anyone'),
     has_brief_personal: !!call.has_brief_personal,
     private: !!call.private, // Pete agent: not recorded, deleted after the call
+    checkin: !!call.checkin, // just checking in: short, no agenda beyond the brief
     disclosure: call.private ? PETE_OPENER : openerFor(contact), // what the callee heard first
     rules: { max_seconds: call.max_seconds, tier: 'public', style: 'spoken prose, 1-3 sentences, no markdown/emoji/URLs' },
   }
@@ -196,7 +204,7 @@ async function warmThenDial(d: Deps, id: string, jobId: string): Promise<void> {
     return
   }
   // Time has passed (up to WARM_TIMEOUT_S): check again before dialing. The live-call check skips this call itself.
-  const bad = dialChecks(effective(c, db), db, call.to_e164, false, clock(d), id)
+  const bad = dialChecks(effective(c, db), db, call.to_e164, false, clock(d), id, !!call.checkin)
   if (bad) {
     run(db, "UPDATE calls SET status = 'refused', error = ?, ended_at = ? WHERE id = ?", `${bad.code}: ${bad.message}`, now(), id)
     audit(db, call.agent_id, 'call.refused', id, bad)
@@ -218,6 +226,7 @@ async function dial(d: Deps, id: string): Promise<void> {
     run(db, 'UPDATE calls SET el_conversation_id = ? WHERE id = ?', reg.conversationId, id)
     const tw = await d.twilio.createCall({
       to: call.to_e164, from: call.from_e164, twiml: reg.twiml, timeLimit: call.max_seconds, statusCallback: statusCallbackUrl(c, id),
+      ...(call.checkin ? { ringS: c.CHECKIN_RING_S } : {}),
       ...(c.AMD_ENABLED ? { amd: { callback: webhookUrl(c, 'amd', id), timeoutS: c.AMD_TIMEOUT_S } } : {}),
     })
     if (c.AMD_ENABLED) run(db, 'UPDATE calls SET amd = 1 WHERE id = ?', id)

@@ -18,7 +18,7 @@ export function callSummary(d: Deps, c: CallRow) {
     summary_title: c.private ? null : c.summary_title, summary: c.private ? null : c.summary, cost_usd: c.cost_usd,
     has_recording: !!c.recording_path, recording_deleted: !!c.recording_deleted_at, finalized: !!c.finalized_at,
     brain: c.brain, tier: c.tier,
-    private: !!c.private, el_deleted: !!c.el_deleted_at, scrubbed: !!c.scrubbed_at,
+    private: !!c.private, checkin: !!c.checkin, el_deleted: !!c.el_deleted_at, scrubbed: !!c.scrubbed_at,
   }
 }
 

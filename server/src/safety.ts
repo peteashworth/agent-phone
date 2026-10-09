@@ -77,10 +77,41 @@ export function checkDestination(c: Config, db: DB, to: string): Refusal | null 
   return null
 }
 
+/** Calls that actually went out (or are going out): a refused, expired or unconfirmed one never rang anything. */
+const DIALED = `dry_run = 0 AND (twilio_sid IS NOT NULL OR status IN (${[...LIVE].map(s => `'${s}'`).join(',')}))`
+
+/**
+ * Check-in rules on top of the normal ones: pause switch, CHECKIN_TZ window, daily cap, gap since the last check-in,
+ * and quiet time after any other call with the number. Missed check-ins count (one ring, no redial).
+ */
+export function checkCheckin(c: Config, db: DB, to: string, at: Date, exceptId = ''): Refusal | null {
+  if (c.CHECKINS_PAUSED) return { code: 'checkins_paused', message: 'Check-in calls are paused (dashboard Limits tab or CLI checkins:resume)' }
+  const h = localHour(c.CHECKIN_TZ, at)
+  if (h < c.CHECKIN_HOURS_START || h >= c.CHECKIN_HOURS_END)
+    return { code: 'outside_checkin_hours', message: `It's ${h}:00 in ${c.CHECKIN_TZ}; check-ins are allowed ${c.CHECKIN_HOURS_START}:00-${c.CHECKIN_HOURS_END}:00` }
+  const checkins = all<{ created_at: string }>(db,
+    `SELECT created_at FROM calls WHERE to_e164 = ? AND checkin = 1 AND id != ? AND ${DIALED} AND created_at >= ? ORDER BY created_at DESC`,
+    to, exceptId, new Date(at.getTime() - 2 * 86400_000).toISOString())
+  const today = localDate(c.CHECKIN_TZ, at)
+  const n = checkins.filter(r => localDate(c.CHECKIN_TZ, new Date(r.created_at)) === today).length
+  if (n >= c.CHECKIN_MAX_PER_DAY)
+    return { code: 'checkin_cap', message: `Already ${n} check-in${n === 1 ? '' : 's'} today (max ${c.CHECKIN_MAX_PER_DAY})` }
+  const gapMs = c.CHECKIN_MIN_GAP_H * 3600_000
+  if (checkins[0] && at.getTime() - Date.parse(checkins[0].created_at) < gapMs)
+    return { code: 'checkin_too_soon', message: `Last check-in was at ${checkins[0].created_at}; at least ${c.CHECKIN_MIN_GAP_H}h between check-ins` }
+  const recent = one<{ id: string }>(db,
+    `SELECT id FROM calls WHERE to_e164 = ? AND checkin = 0 AND id != ? AND ${DIALED} AND COALESCE(ended_at, created_at) >= ? LIMIT 1`,
+    to, exceptId, new Date(at.getTime() - c.CHECKIN_QUIET_H * 3600_000).toISOString())
+  if (recent) return { code: 'checkin_quiet', message: `Another call with ${to} (${recent.id}) was less than ${c.CHECKIN_QUIET_H}h ago` }
+  return null
+}
+
 /** Everything that must hold at the moment we dial. Dry runs skip the live-call and spend checks (they cost nothing). */
-export function dialChecks(c: Config, db: DB, to: string, dry: boolean, at: Date, exceptId = ''): Refusal | null {
+export function dialChecks(c: Config, db: DB, to: string, dry: boolean, at: Date, exceptId = '', checkin = false): Refusal | null {
   const tz = one<{ tz: string | null }>(db, 'SELECT tz FROM contacts WHERE e164 = ?', to)?.tz ?? null
-  return checkDestination(c, db, to) ?? checkHours(c, tz, at) ?? (dry ? null : checkLiveCall(db, exceptId) ?? checkSpend(c, db, at, exceptId))
+  // A check-in has its own window (CHECKIN_TZ, 9-21 by default) in place of the general calling hours.
+  return checkDestination(c, db, to) ?? (checkin ? checkCheckin(c, db, to, at, exceptId) : checkHours(c, tz, at)) ??
+    (dry ? null : checkLiveCall(db, exceptId) ?? checkSpend(c, db, at, exceptId))
 }
 
 const round = (n: number) => Math.round(n * 100) / 100

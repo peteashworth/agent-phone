@@ -132,6 +132,16 @@ describe('admin routes', () => {
     ])
   })
 
+  it('settings: the check-in pause is a boolean', async () => {
+    const { keys } = await start()
+    const get = async () => (await req('GET', '/admin/settings', keys.admin)).json().settings
+      .find((s: { key: string }) => s.key === 'CHECKINS_PAUSED')
+    expect(await get()).toMatchObject({ value: false, type: 'boolean', source: 'env' })
+    expect((await req('PATCH', '/admin/settings', keys.admin, { CHECKINS_PAUSED: 'true' })).statusCode).toBe(400)
+    expect((await req('PATCH', '/admin/settings', keys.admin, { CHECKINS_PAUSED: true })).statusCode).toBe(200)
+    expect(await get()).toMatchObject({ value: true, source: 'dashboard' })
+  })
+
   it('saved settings take effect on the next call, no restart', async () => {
     const { d, keys } = await start({ ...LIVE_ENV, VOICEMAIL_ACTION: 'message' })
     await req('PATCH', '/admin/settings', keys.admin, { MAX_CALL_SECONDS: 90, VOICEMAIL_LINE: 'Call you later. Bye.' })
