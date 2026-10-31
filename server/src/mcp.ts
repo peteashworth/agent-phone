@@ -6,7 +6,7 @@ import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js'
 import { z } from 'zod'
 import { type Deps, type CallRow, CallRefused, placeCall, confirmCall, getCall, listCalls, callEvents } from './calls.ts'
 import { listNumbers } from './numbers.ts'
-import { addContact, updateContact, getContact } from './contacts.ts'
+import { addContact, updateContact, getContact, listContacts, matchContacts } from './contacts.ts'
 import { authenticate } from './auth.ts'
 import { callDetail, callTurns } from './routes/api.ts'
 
@@ -46,7 +46,9 @@ export function buildMcpServer(d: Deps, agentId: string): McpServer {
       '(it expires). All checks (calling hours, spend caps, do-not-call, one call at a time) run again at confirmation. ' +
       'Returns the call id immediately; poll get_call for the outcome.',
     inputSchema: {
-      to: z.string().describe('Destination phone number (E.164 preferred; US numbers may omit +1)'),
+      to: z.string().describe('Destination: a phone number (E.164 preferred; US numbers may omit +1), or a contact\'s name, ' +
+        'first name, nickname or label such as "sister" (see list_contacts). A name that matches no one, or more than one ' +
+        'contact, is refused with the matches listed. A name gets exactly the same checks as its number.'),
       purpose: z.string().min(3).max(200).describe('One line: why we are calling'),
       brief: z.string().min(3).max(4000).describe('What the voice agent needs to know: who, context, facts it may share'),
       plan: z.string().max(4000).optional().describe('Step-by-step call plan / goals / what to do if X'),
@@ -105,6 +107,17 @@ export function buildMcpServer(d: Deps, agentId: string): McpServer {
     inputSchema: {},
     annotations: { readOnlyHint: true },
   }, guard(async () => listNumbers(d.db).map(n => ({ label: n.label, number: n.e164, kind: n.kind, active: !!n.active }))))
+
+  s.registerTool('list_contacts', {
+    title: 'List contacts',
+    description: 'Pete\'s saved contacts: name, label (nicknames / relationship, e.g. "sister"), number, and whether they can be ' +
+      'called (allowed), are dialed without confirmation (trusted), or opted out (do_not_call). Read-only; only Pete can ' +
+      'change labels, allowed and trusted. Optional query: the same name/label matching place_call uses.',
+    inputSchema: { query: z.string().min(1).max(100).optional() },
+    annotations: { readOnlyHint: true },
+  }, guard(async ({ query }) => (query ? matchContacts(d.db, query) : listContacts(d.db)).map(c => ({
+    name: c.name, label: c.label || null, number: c.e164, allowed: !!c.allowed, trusted: !!c.trusted, do_not_call: !!c.do_not_call,
+  }))))
 
   s.registerTool('add_contact', {
     title: 'Add a contact',

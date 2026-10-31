@@ -36,6 +36,7 @@ const USAGE = `usage: node src/cli.ts <command>
   contact:set <phone> <field> <0|1>             field: allowed | trusted | known | do_not_call | inbound_allowed
   contact:add <phone> <name>                    new contact (not allowed, not trusted)
   contacts                        list contacts
+  contact:label <phone> <labels|none>           nicknames/relationships for place_call, comma-separated, e.g. "sister, Steph"
   contact:tz <phone> <IANA zone|none>           e.g. America/Denver; none = unknown (window must fit both US coasts)
   numbers                         show numbers + caller-ID rules
   checkins:pause | checkins:resume              stop / allow check-in calls (same switch as the dashboard Limits tab)`
@@ -80,10 +81,16 @@ async function main(argv: string[]) {
       if (!phone || !name.length) throw new Error(USAGE)
       console.log(adminSetContact(db, 'cli', phone, { name: name.join(' ') })); break
     }
-    case 'contacts': console.table(all(db, 'SELECT e164, name, allowed, trusted, known, do_not_call, inbound_allowed, tz FROM contacts ORDER BY name')); break
+    case 'contacts': console.table(all(db, 'SELECT e164, name, label, allowed, trusted, known, do_not_call, inbound_allowed, tz FROM contacts ORDER BY name')); break
     case 'checkins:pause': case 'checkins:resume':
       saveSettings(config, db, 'cli', { CHECKINS_PAUSED: cmd === 'checkins:pause' })
       console.log(cmd === 'checkins:pause' ? 'check-ins paused' : 'check-ins allowed'); break
+    case 'contact:label': {
+      const [phone, ...label] = args
+      if (!phone || !label.length) throw new Error(USAGE)
+      const v = label.join(' ')
+      console.log(adminSetContact(db, 'cli', phone, { label: v === 'none' ? '' : v })); break
+    }
     case 'contact:tz': {
       const [phone, tz] = args
       if (!phone || !tz) throw new Error(USAGE)

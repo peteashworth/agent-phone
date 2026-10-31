@@ -3,7 +3,7 @@ import { toE164 } from './phone.ts'
 import { MAX_ALLOWED } from './settings.ts'
 
 export type Contact = {
-  e164: string; name: string; trusted: number; do_not_call: number; inbound_allowed: number; allowed: number; known: number
+  e164: string; name: string; trusted: number; do_not_call: number; inbound_allowed: number; allowed: number; known: number; label: string
   notes: string; tz: string | null; created_at: string; updated_at: string
 }
 export type ContactPatch = {
@@ -65,8 +65,8 @@ export function setDoNotCall(db: DB, actor: string, phone: string, reason: strin
   audit(db, actor, 'contact.do_not_call', e164, { reason })
 }
 
-export type AdminContactPatch = { name?: string; notes?: string; tz?: string | null; allowed?: boolean; trusted?: boolean; inbound_allowed?: boolean; known?: boolean; do_not_call?: true }
-const ADMIN_FIELDS = ['name', 'notes', 'tz', 'allowed', 'trusted', 'inbound_allowed', 'known', 'do_not_call'] as const
+export type AdminContactPatch = { name?: string; label?: string; notes?: string; tz?: string | null; allowed?: boolean; trusted?: boolean; inbound_allowed?: boolean; known?: boolean; do_not_call?: true }
+const ADMIN_FIELDS = ['name', 'label', 'notes', 'tz', 'allowed', 'trusted', 'inbound_allowed', 'known', 'do_not_call'] as const
 
 /**
  * Pete's edits from the dashboard (admin key). Adds the contact if it's new (name required). Enforces the allowlist
@@ -76,6 +76,7 @@ export function adminSetContact(db: DB, actor: string, phone: string, patch: Adm
   const e164 = normalizeOrThrow(phone)
   if ((patch as { do_not_call?: unknown }).do_not_call === false) throw new Error('Removing do-not-call is CLI-only (contact:set <phone> do_not_call 0 on the droplet)')
   if (patch.tz) patch = { ...patch, tz: validTz(patch.tz) }
+  if (patch.label !== undefined) patch = { ...patch, label: cleanLabel(patch.label) }
   return tx(db, () => {
     let old = getContact(db, e164)
     if (!old) {
@@ -98,4 +99,48 @@ export function adminSetContact(db: DB, actor: string, phone: string, patch: Adm
     }
     return getContact(db, e164)!
   })
+}
+
+/** "Sister,  steph ,," -> "Sister, steph". Each entry is a nickname or relationship that place_call can resolve. */
+export function cleanLabel(label: string): string {
+  const parts = label.split(',').map(x => x.trim().replace(/\s+/g, ' ')).filter(Boolean)
+  if (parts.some(x => x.length > 40)) throw new Error('Each label entry must be 40 characters or less')
+  if (parts.some(x => /\d/.test(x))) throw new Error('Label entries can\'t contain digits (they would look like phone numbers)')
+  return [...new Set(parts)].join(', ')
+}
+
+const words = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+
+/**
+ * Contacts a spoken name could mean: the full name, any one word of it ("Stephanie" for "Stephanie Ashworth"), or a
+ * label entry ("sister"). Case and punctuation are ignored; a leading "my" is dropped ("my sister"). Exact words only,
+ * no prefixes or fuzzy matching, so a typo finds nobody rather than the wrong person.
+ */
+export function matchContacts(db: DB, query: string): Contact[] {
+  const q = words(query).replace(/^my /, '')
+  if (!q) return []
+  return listContacts(db).filter(c => {
+    const name = words(c.name)
+    return name === q || name.split(' ').includes(q) || c.label.split(',').some(l => words(l) === q)
+  })
+}
+
+export class ContactLookupError extends Error {
+  code: 'unknown_contact' | 'ambiguous_contact'
+  constructor(code: ContactLookupError['code'], message: string) { super(message); this.code = code }
+}
+
+/**
+ * The one contact a name means. Opted-out rows only count when nothing else matches (then the do-not-call check
+ * refuses the call as usual). Resolving never decides whether a call may happen: the number goes through the exact
+ * same checks as if it had been typed.
+ */
+export function resolveContact(db: DB, query: string): Contact {
+  const all = matchContacts(db, query)
+  const live = all.filter(c => !c.do_not_call)
+  const hits = live.length ? live : all
+  if (!hits.length) throw new ContactLookupError('unknown_contact', `No contact matches "${query.trim()}". Use list_contacts to see names and labels, or give the number.`)
+  if (hits.length > 1) throw new ContactLookupError('ambiguous_contact', `"${query.trim()}" matches ${hits.length} contacts: ` +
+    hits.map(c => `${c.name}${c.label ? ` (${c.label})` : ''} ${c.e164}`).join('; ') + '. Use the full name or the number.')
+  return hits[0]
 }

@@ -202,7 +202,7 @@ describe('permission guard', () => {
   it('no MCP tool, agent, read or brain key can write allowed, trusted, known or settings', async () => {
     const { d, keys } = await start(LIVE_ENV)
     d.db.prepare("INSERT INTO contacts (e164, name) VALUES (?, 'Other')").run(OTHER)
-    const before = all(d.db, 'SELECT e164, allowed, trusted, known, inbound_allowed, do_not_call FROM contacts ORDER BY e164')
+    const before = all(d.db, 'SELECT e164, allowed, trusted, known, inbound_allowed, do_not_call, label FROM contacts ORDER BY e164')
     const call = await placeCall(d, 'jasmine', { to: PETE, purpose: 'test', brief: 'hi' })
 
     // 1. Every HTTP route that isn't /admin, every method, every non-admin key.
@@ -223,14 +223,14 @@ describe('permission guard', () => {
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/phone/mcp`), {
       requestInit: { headers: as(keys.agent) } }))
     const tools = (await client.listTools()).tools
-    const forbidden = ['allowed', 'trusted', 'known', 'inbound_allowed', ...Object.keys(SETTINGS)]
+    const forbidden = ['allowed', 'trusted', 'known', 'inbound_allowed', 'label', ...Object.keys(SETTINGS)]
     for (const t of tools) {
       const props = Object.keys((t.inputSchema as { properties?: object }).properties ?? {})
       expect(props.filter(p => forbidden.includes(p)), t.name).toEqual([])
     }
     const base: Record<string, object> = {
       place_call: { to: OTHER, purpose: 'test', brief: 'hi' }, confirm_call: { confirm_token: 'cfm_x' },
-      get_call: { id: call.id }, list_calls: {}, list_numbers: {}, add_contact: { phone: '+14355550100', name: 'New' },
+      get_call: { id: call.id }, list_calls: {}, list_contacts: {}, list_numbers: {}, add_contact: { phone: '+14355550100', name: 'New' },
       update_contact: { phone: OTHER },
     }
     expect(tools.map(t => t.name).sort()).toEqual(Object.keys(base).sort()) // a new tool must be added here
@@ -242,7 +242,7 @@ describe('permission guard', () => {
 
     // Nothing moved.
     expect(all(d.db, 'SELECT * FROM settings')).toEqual([])
-    expect(all(d.db, 'SELECT e164, allowed, trusted, known, inbound_allowed, do_not_call FROM contacts WHERE e164 != ? ORDER BY e164', '+14355550100'))
+    expect(all(d.db, 'SELECT e164, allowed, trusted, known, inbound_allowed, do_not_call, label FROM contacts WHERE e164 != ? ORDER BY e164', '+14355550100'))
       .toEqual(before)
     expect(one(d.db, "SELECT allowed, trusted, known, inbound_allowed FROM contacts WHERE e164 = '+14355550100'") ?? { allowed: 0, trusted: 0, known: 0, inbound_allowed: 0 })
       .toEqual({ allowed: 0, trusted: 0, known: 0, inbound_allowed: 0 })

@@ -12,6 +12,7 @@ import { spend } from '../safety.ts'
 
 const contactBody = z.object({
   name: z.string().trim().min(1).max(100).optional(),
+  label: z.string().max(200).optional(), // comma-separated nicknames / relationships that place_call resolves, e.g. "sister, Steph"
   notes: z.string().max(2000).optional(),
   tz: z.string().min(1).max(64).nullable().optional(),
   allowed: z.boolean().optional(),
@@ -22,7 +23,7 @@ const contactBody = z.object({
 }).strict()
 
 const view = (c: Contact) => ({
-  phone: c.e164, name: c.name, tz: c.tz, notes: c.notes, allowed: !!c.allowed, trusted: !!c.trusted, known: !!c.known,
+  phone: c.e164, name: c.name, label: c.label, tz: c.tz, notes: c.notes, allowed: !!c.allowed, trusted: !!c.trusted, known: !!c.known,
   inbound_allowed: !!c.inbound_allowed, do_not_call: !!c.do_not_call, updated_at: c.updated_at,
 })
 

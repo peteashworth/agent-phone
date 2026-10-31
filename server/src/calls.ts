@@ -4,6 +4,7 @@ import type { Config } from './config.ts'
 import { type DB, one, all, run, audit } from './db.ts'
 import { toE164 } from './phone.ts'
 import { fromFor } from './numbers.ts'
+import { resolveContact, ContactLookupError } from './contacts.ts'
 import { dialChecks } from './safety.ts'
 import { effective } from './settings.ts'
 import type { ElevenLabsClient } from './voice/elevenlabs.ts'
@@ -69,7 +70,18 @@ export async function placeCall(d: Deps, agentId: string, input: PlaceCallInput)
     throw new CallRefused(code, msg)
   }
 
-  const to = toE164(input.to) ?? refuse('invalid_number', `Not a valid phone number: ${input.to}`, null)
+  // A name, nickname or label ("Stephanie", "sister") becomes that contact's number, then goes through every check below
+  // exactly as a typed number would. Resolving never lets anyone through on its own.
+  let resolvedFrom: string | null = null
+  let to = toE164(input.to)
+  if (!to && /\p{L}/u.test(input.to)) {
+    try { to = resolveContact(db, input.to).e164 } catch (e) {
+      if (e instanceof ContactLookupError) refuse(e.code, e.message, null)
+      throw e
+    }
+    resolvedFrom = input.to.trim()
+  }
+  if (!to) return refuse('invalid_number', `Not a valid phone number or contact name: ${input.to}`, null)
   if (!input.purpose.trim() || !input.brief.trim()) refuse('missing_fields', 'purpose and brief are required', to)
 
   const brain: BrainKind = input.brain ?? c.BRAIN
@@ -111,7 +123,7 @@ export async function placeCall(d: Deps, agentId: string, input: PlaceCallInput)
     brain, input.brief_personal?.trim() || null, input.brief_personal?.trim() ? 1 : 0, factSel.length ? JSON.stringify(factSel) : null,
     isPrivate ? 1 : 0, (isPrivate ? c.ELEVENLABS_PETE_AGENT_ID : c.ELEVENLABS_AGENT_ID) ?? null, input.checkin ? 1 : 0)
   // Fact ids only, never values; brief_personal only as a flag.
-  audit(db, agentId, 'call.place', id, { to, from: fromLabel, dry, needs_confirmation: !trusted, brain,
+  audit(db, agentId, 'call.place', id, { to, ...(resolvedFrom ? { to_input: resolvedFrom } : {}), from: fromLabel, dry, needs_confirmation: !trusted, brain,
     facts: factSel, has_brief_personal: !!input.brief_personal?.trim(), ...(isPrivate ? { private: true } : {}),
     ...(input.checkin ? { checkin: true } : {}) })
 
