@@ -35,7 +35,7 @@ Bearer and keeps nothing. Lost or leaked: `key:revoke <prefix>` (every change in
 
 | Setting | Bounds |
 |---|---|
-| MAX_CALL_SECONDS | 30-600 |
+| MAX_CALL_SECONDS | 30-1200 |
 | SPEND_CAP_DAY_USD | 0-20 |
 | SPEND_CAP_MONTH_USD | 0-100 |
 | CALL_HOURS_START / CALL_HOURS_END | 7-21 / 8-22, end after start |

@@ -13,6 +13,11 @@ describe('config', () => {
     expect(c.DIALING_ENABLED).toBe(false)
     expect(c.MAX_CALL_SECONDS).toBe(300)
   })
+  it('MAX_CALL_SECONDS ceiling is 1200 (20 min)', () => {
+    expect(loadConfig({ MAX_CALL_SECONDS: '1200' }).MAX_CALL_SECONDS).toBe(1200)
+    expect(() => loadConfig({ MAX_CALL_SECONDS: '1201' })).toThrow()
+    expect(() => loadConfig({ MAX_CALL_SECONDS: '29' })).toThrow()
+  })
   it('blank values count as unset', () => {
     expect(loadConfig({ WEBHOOK_TOKEN: '', PUBLIC_BASE_URL: ' ' }).WEBHOOK_TOKEN).toBeUndefined()
   })

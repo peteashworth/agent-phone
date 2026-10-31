@@ -24,7 +24,7 @@
       "speed": 1
     },
     "turn": { "turn_timeout": 7, "mode": "turn", "turn_eagerness": "normal" },
-    "conversation": { "max_duration_seconds": 300 }
+    "conversation": { "max_duration_seconds": 1200 }
   },
   "platform_settings": {
     "privacy": { "record_voice": true, "retention_days": 30 }

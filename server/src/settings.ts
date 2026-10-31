@@ -7,7 +7,7 @@ import { type DB, all, one, run, audit, tx } from './db.ts'
 import { toE164 } from './phone.ts'
 
 export const SETTINGS = {
-  MAX_CALL_SECONDS: { label: 'Max call length (seconds)', schema: z.number().int().min(30).max(600) },
+  MAX_CALL_SECONDS: { label: 'Max call length (seconds)', schema: z.number().int().min(30).max(1200) },
   SPEND_CAP_DAY_USD: { label: 'Daily spend cap (USD)', schema: z.number().min(0).max(20) },
   SPEND_CAP_MONTH_USD: { label: 'Monthly spend cap (USD)', schema: z.number().min(0).max(100) },
   CALL_HOURS_START: { label: 'Calling hours start (local hour)', schema: z.number().int().min(7).max(21) },

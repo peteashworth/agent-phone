@@ -43,3 +43,9 @@ analysis off, no evaluation or data collection. Zero-retention mode is allowed o
 with a custom LLM (`custom_llm_not_allowed_in_zrm`), so the server DELETEs each Pete-agent conversation after the call
 instead. The post-call summary/title can't be switched off in the API (`analysis_llm` has no "none"); it is generated,
 then deleted along with the conversation, and the server never fetches it.
+
+## max-duration.mjs
+
+`node elevenlabs/max-duration.mjs <seconds> [--dry]` sets `conversation.max_duration_seconds` on BOTH phone agents
+(Jasmine Phone + Jasmine Phone — Pete) and reads it back. ElevenLabs ends the call at this length whatever the server
+allows, so keep it >= the server's MAX_CALL_SECONDS ceiling (1200). Oct 30 2026: 300 -> 1200 (Pete approved). Revert: `300`.

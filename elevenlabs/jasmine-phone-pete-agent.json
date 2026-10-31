@@ -42,7 +42,7 @@
       "model_id": "eleven_v4_turbo"
     },
     "conversation": {
-      "max_duration_seconds": 300
+      "max_duration_seconds": 1200
     }
   },
   "platform_settings": {

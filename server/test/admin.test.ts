@@ -102,18 +102,25 @@ describe('admin routes', () => {
     expect(contact(d, '+14355559999')).toBeUndefined() // all or nothing: not even created
   })
 
+  it('settings: MAX_CALL_SECONDS accepts the 1200s ceiling', async () => {
+    const { keys } = await start()
+    expect((await req('PATCH', '/admin/settings', keys.admin, { MAX_CALL_SECONDS: 1200 })).statusCode).toBe(200)
+    const s = (await req('GET', '/admin/settings', keys.admin)).json().settings.find((x: { key: string }) => x.key === 'MAX_CALL_SECONDS')
+    expect(s).toMatchObject({ value: 1200, source: 'dashboard' })
+  })
+
   it('settings: save, bounds, empty window, reset to env', async () => {
     const { d, keys } = await start()
     const get = async () => Object.fromEntries((await req('GET', '/admin/settings', keys.admin)).json().settings
       .map((s: { key: string }) => [s.key, s]))
-    expect((await get()).MAX_CALL_SECONDS).toMatchObject({ value: 300, source: 'env', min: 30, max: 600 })
+    expect((await get()).MAX_CALL_SECONDS).toMatchObject({ value: 300, source: 'env', min: 30, max: 1200 })
 
     const ok = await req('PATCH', '/admin/settings', keys.admin, { MAX_CALL_SECONDS: 120, VOICEMAIL_LINE: '  Sorry I missed you, bye.  ' })
     expect(ok.statusCode).toBe(200)
     expect((await get()).MAX_CALL_SECONDS).toMatchObject({ value: 120, source: 'dashboard', env_value: 300 })
     expect((await get()).VOICEMAIL_LINE.value).toBe('Sorry I missed you, bye.')
 
-    for (const bad of [{ MAX_CALL_SECONDS: 601 }, { SPEND_CAP_DAY_USD: 21 }, { SPEND_CAP_MONTH_USD: -1 }, { CALL_HOURS_START: 6 },
+    for (const bad of [{ MAX_CALL_SECONDS: 1201 }, { SPEND_CAP_DAY_USD: 21 }, { SPEND_CAP_MONTH_USD: -1 }, { CALL_HOURS_START: 6 },
       { CALL_HOURS_END: 23 }, { CONFIRM_TTL_MIN: 0 }, { VOICEMAIL_LINE: 'a\nb' }, { VOICEMAIL_LINE: '' }, { MAX_CALL_SECONDS: '120' },
       { DIALING_ENABLED: true }, { CODE_PHRASE: 'x' }, { CALL_HOURS_START: 12, CALL_HOURS_END: 12 }, { CALL_HOURS_START: 21 }]) {
       const r = await req('PATCH', '/admin/settings', keys.admin, bad)

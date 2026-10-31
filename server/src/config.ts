@@ -19,7 +19,7 @@ const schema = z.object({
   // LEGACY. The allowlist is contacts.allowed now (dashboard / CLI). This is read once, on the first boot after migration
   // 005, to seed it (unset = Pete only, the old default); after that it is ignored and can be deleted from the env.
   ALLOWED_DESTINATIONS: z.string().optional(),
-  MAX_CALL_SECONDS: z.coerce.number().int().min(30).max(600).default(300),
+  MAX_CALL_SECONDS: z.coerce.number().int().min(30).max(1200).default(300),
 
   // ---- Milestone B safety layer
   // Local calling window at the destination, hours [start, end). Contacts without a tz must fit every continental US zone.
