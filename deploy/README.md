@@ -17,7 +17,7 @@ nginx -t && systemctl reload nginx
 
 # Seed + Jasmine's MCP key (printed ONCE; goes into Jasmine's MCP config, never into git or chat logs)
 cd /opt/agent-phone/server
-set -a; source /etc/agent-phone.env; set +a
+source /opt/agent-phone/deploy/load-env.sh
 export NODE_NO_WARNINGS=1                     # hides node:sqlite's ExperimentalWarning
 sudo -u agent-phone --preserve-env node src/cli.ts seed
 sudo -u agent-phone --preserve-env node src/cli.ts key:create jasmine
@@ -27,7 +27,7 @@ Admin CLI later (same three setup lines first, then any command; `node src/cli.t
 
 ```bash
 cd /opt/agent-phone/server
-set -a; source /etc/agent-phone.env; set +a; export NODE_NO_WARNINGS=1
+source /opt/agent-phone/deploy/load-env.sh; export NODE_NO_WARNINGS=1
 sudo -u agent-phone --preserve-env node src/cli.ts key:list
 ```
 

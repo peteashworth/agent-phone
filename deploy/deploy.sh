@@ -7,7 +7,7 @@ sudo -u agent-phone git pull --ff-only
 cd server
 sudo -u agent-phone npm ci --omit=dev --no-audit --no-fund
 # Migrations also run on boot; running them here surfaces errors before the restart.
-set -a; source /etc/agent-phone.env; set +a
+source "$APP_DIR/deploy/load-env.sh" /etc/agent-phone.env   # systemd-style read; never runs the file as shell
 export NODE_NO_WARNINGS=1   # silences node:sqlite's ExperimentalWarning
 # systemd creates the StateDirectory only on the service's first start; on a fresh install it doesn't exist yet.
 DATA_DIR=${DATA_DIR:-/var/lib/agent-phone}
