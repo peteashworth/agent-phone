@@ -605,3 +605,41 @@ describe('a throw before the stream starts', () => {
     expect(callEvents(d.db, call.id).some(e => e.type === 'brain_error')).toBe(true)
   })
 })
+
+describe("end_call needs the callee's goodbye, on every call (call_c7j2KqyVXzK5: brain_end mid-conversation)", () => {
+  const personal = async (answers: Record<string, unknown>[]) => {
+    const r = await start({}, {}, [undefined as never, [{ say: 'Hi.' }, ...answers]])
+    await ask(r.call.id, 'purple otter river lamp')
+    expect(getCall(r.d.db, r.call.id)!.tier).toBe('personal')
+    return r
+  }
+  const turnPayloads = (seen: JobRow[]) => seen.filter(j => j.type === 'turn').map(j => JSON.parse(j.payload))
+  it('refused without a goodbye: the line is said, the call stays up, end_call_allowed false told to the host', async () => {
+    const { d, call, seen } = await personal([{ say: 'Okay, talk soon. [[end_call]]' }])
+    expect(spoken((await ask(call.id, 'purple otter river lamp', 'Yeah the truck is running fine now.')).body)).toBe('Okay, talk soon.')
+    expect(getCall(d.db, call.id)).toMatchObject({ end_reason: null, hangup_requested_at: null })
+    expect(all<{ data: string }>(d.db, "SELECT data FROM call_events WHERE call_id = ? AND type = 'end_call_refused'", call.id).map(e => JSON.parse(e.data)))
+      .toEqual([{ seq: 2, reason: 'no_goodbye' }])
+    expect(turnPayloads(seen)[1]).toMatchObject({ tier: 'personal', end_call_allowed: false })
+  })
+  it('allowed after his goodbye', async () => {
+    for (const bye of ['Alright, talk to you later.', 'Okay bye.', 'You can hang up now.']) {
+      const { d, call, seen } = await personal([{ say: 'Bye Pete. [[end_call]]' }])
+      await ask(call.id, 'purple otter river lamp', bye)
+      expect(getCall(d.db, call.id)!.end_reason, bye).toBe('brain_end')
+      expect(turnPayloads(seen)[1].end_call_allowed).toBe(true)
+      stopHost?.(); await app?.close(); app = undefined
+    }
+  })
+  it('public tier too: refused on "Sounds good" / "Thanks", allowed on the goodbye that follows', async () => {
+    const { d, call, seen } = await start({}, {}, [undefined as never, [{ say: 'Great, bye. [[end_call]]' }, { say: 'Thanks, bye! [[end_call]]' }, { say: 'Bye! [[end_call]]' }]])
+    await ask(call.id, 'Sounds good, Tuesday works.')
+    await ask(call.id, 'Sounds good, Tuesday works.', 'Perfect, thank you.')
+    expect(getCall(d.db, call.id)).toMatchObject({ end_reason: null, hangup_requested_at: null })
+    await ask(call.id, 'Sounds good, Tuesday works.', 'Perfect, thank you.', 'Okay, bye.')
+    expect(getCall(d.db, call.id)!.end_reason).toBe('brain_end')
+    expect(turnPayloads(seen).map(t => [t.tier, t.end_call_allowed])).toEqual([['public', false], ['public', false], ['public', true]])
+    expect(all<{ data: string }>(d.db, "SELECT data FROM call_events WHERE call_id = ? AND type = 'end_call_refused'", call.id).map(e => JSON.parse(e.data).reason))
+      .toEqual(['no_goodbye', 'no_goodbye'])
+  })
+})

@@ -14,7 +14,10 @@ export function isQuestion(text: string): boolean {
   return QUESTION_START.test(last + ' ')
 }
 
-const GOODBYE = /\b(bye|goodbye|bye-bye|good night|goodnight|see ya|talk to you (later|soon)|take care|gotta go|got to go|have to go|need to go|i.ll let you go|can i go|are we done)\b/i
+const GOODBYE = /\b(bye|goodbye|bye-bye|good night|goodnight|see ya|talk to you (later|soon)|(talk|speak|catch you) (later|soon)|take care|gotta go|got to go|have to go|need to go|i.ll let you go|can i go|are we done|we.re done|that.s all for now|(good|nice|great) talking|(you can|go ahead and|please) hang up|end the call)\b/i
 
-/** True if the callee's own words are a goodbye ("Bye?", "Can I go now?"): their question doesn't keep the call open. */
+/**
+ * True if the callee's own words are a goodbye ("Bye?", "Can I go now?"): their question doesn't keep the call open.
+ * The brain may only end a call after one of these (Nov 4, call_c7j2KqyVXzK5).
+ */
 export const isGoodbye = (text: string) => GOODBYE.test(text.replace(/[’]/g, "'"))

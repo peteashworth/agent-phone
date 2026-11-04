@@ -116,7 +116,8 @@ export type Prepared = {
   seq: number
   filter: FilterOptions
   /** The callee's latest words are a question (and not a goodbye): the brain may not end the call on this turn. */
-  keepOpen: boolean
+  /** Why the brain's end_call would be refused this turn ('question' | 'no_goodbye'), or null if it's allowed. */
+  keepOpen: 'question' | 'no_goodbye' | null
 }
 
 const userTexts = (messages: ChatMessage[]) => messages.filter(m => m.role === 'user').map(m => textOf(m.content))
@@ -211,13 +212,17 @@ export function prepareJasmineTurn(d: Deps, call: CallRow, messages: ChatMessage
       ? { spoken: lastAgent || null } : null
 
   const question = isQuestion(userText)
+  // The brain's [[end_call]] only goes through after the callee's own goodbye, on every call (Pete, Nov 4; after
+  // call_c7j2KqyVXzK5's brain_end at 184s with Pete mid-conversation). Otherwise the callee hangs up.
+  const goodbye = isGoodbye(userText)
+  const keepOpen = goodbye ? null : question ? 'question' : 'no_goodbye'
 
   const seq = now.brain_seq + 1
   run(db, 'UPDATE calls SET brain_seq = ? WHERE id = ?', seq, call.id)
   return {
-    call: now, seq, usersUpto: users.length, filter: filterOptions(d, now), keepOpen: question && !isGoodbye(userText),
+    call: now, seq, usersUpto: users.length, filter: filterOptions(d, now), keepOpen,
     payload: {
-      tier: now.tier, user_text: userText, last_user_is_question: question, interrupted, code_phrase: codePhrase,
+      tier: now.tier, user_text: userText, last_user_is_question: question, end_call_allowed: !keepOpen, interrupted, code_phrase: codePhrase,
       ...(codePhrase === 'verified' ? { brief_personal: now.brief_personal, facts: factsFor(picked, 'code') } : {}),
       // The host picked the job this one replaces: its answer to that one was never spoken.
       ...(cont?.seq != null ? { continues: cont.seq } : {}),
@@ -302,9 +307,9 @@ export async function* runJasmineTurn(d: Deps, p: Prepared, log: TurnLog, signal
       }
       if (a.say) yield a.say
       if (a.end_call && p.keepOpen) {
-        // Never hang up on an open question: the line is said, the call stays up, the brain gets the next turn.
+        // Never hang up without the callee's goodbye: the line is said, the call stays up, the brain gets the next turn.
         log.outcome = 'end_call_refused'
-        event(db, id, 'server', 'end_call_refused', { seq: p.seq })
+        event(db, id, 'server', 'end_call_refused', { seq: p.seq, reason: p.keepOpen })
       } else if (a.end_call) {
         log.outcome = 'end_call'
         void hangup(d, id, 'brain_end', speakMs(a.say, c.HANGUP_DELAY_MS) + noticeLeft())

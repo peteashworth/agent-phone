@@ -61,6 +61,7 @@ Expected result: `{ "ready": true }`.
   "user_text": "Sure, Tuesday works.",
   "interrupted": { "spoken": "I can do Tuesday or Wed—" },
   "last_user_is_question": false,
+  "end_call_allowed": false,
   "code_phrase": null }
 ```
 - `user_text` holds only what's new since the last delivered turn. The session already has its own history; we don't
@@ -69,6 +70,8 @@ Expected result: `{ "ready": true }`.
   what the person did and didn't hear.
 - `last_user_is_question` (Oct 8): `user_text` ends in "?" or its last sentence starts like a question (STT often drops the
   "?"). It leans towards yes. The session should answer the question, not end the call.
+- `end_call_allowed` (Nov 4): true only when `user_text` is the person's own goodbye ("Bye", "Talk to you later",
+  "Take care", "Can I go now?", "You can hang up"). When false, an `end_call` is refused (see below).
 - `code_phrase` is `null`, `"verified"` or `"incorrect"` (§7). The phrase itself is never sent.
 - `continues` (only sometimes): the `seq` of an earlier turn this one replaces (continuation, §5). Its `user_text`
   already holds the earlier words too, and the answer to the earlier turn was never spoken.
@@ -78,9 +81,9 @@ Expected result:
 { "say": "Tuesday at ten works. I'll put it in Pete's calendar.", "end_call": false, "ask_code": false,
   "note_for_jasmine": null }
 ```
-- `end_call: true` means we speak `say`, then hang up (`end_reason=brain_end`). **Exception (Oct 8, Bob call):** if
-  `last_user_is_question` was true and the callee's words aren't a goodbye ("Bye?", "Can I go now?"), the server
-  refuses it. `say` is still spoken, the call stays open, the turn outcome is `end_call_refused`, and a
+- `end_call: true` means we speak `say`, then hang up (`end_reason=brain_end`). **Only after their goodbye (Nov 4,
+  every call):** unless the callee's words are a goodbye (`end_call_allowed`), the server refuses it. The event reason
+  is `question` (Oct 8 Bob call rule) or `no_goodbye` (call_c7j2KqyVXzK5). `say` is still spoken, the call stays open, the turn outcome is `end_call_refused`, and a
   `end_call_refused` event is logged.
 - `ask_code: true` means Jasmine is asking for the code phrase, so the next user turn is checked as an attempt (§7).
 - `note_for_jasmine` is stored on the call (for example "they want a callback Friday") and shown in `get_call`.
