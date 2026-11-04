@@ -5,7 +5,7 @@ import { createKey } from '../src/auth.ts'
 import { placeCall, getCall, warming, CallRefused, callEvents } from '../src/calls.ts'
 import { claimNext, submitResult, markPoll, getJob, enqueueJob, type JobRow } from '../src/brainJobs.ts'
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, onlyFiller } from '../src/voice/brainTurn.ts'
-import { EXIT_LINE, FILLER_LINES, FILLER2_LINE, NOTICE_LINE, PETE_OPENER, pickFiller } from '../src/voice/lines.ts'
+import { ACK_LINE, EXIT_LINE, FILLER_LINES, FILLER2_LINE, NOTICE_LINE, PETE_OPENER, pickFiller } from '../src/voice/lines.ts'
 import { findPhrase, nearMiss, removePhrase } from '../src/voice/codePhrase.ts'
 import { isQuestion, isGoodbye } from '../src/voice/question.ts'
 import { OutputFilter, BLOCKED_LINE } from '../src/voice/outputFilter.ts'
@@ -535,5 +535,73 @@ describe('isQuestion / isGoodbye', () => {
   it('goodbyes', () => {
     for (const g of ['Bye?', 'Can I go now?', 'Talk to you later?', 'I’ll let you go', 'Are we done?']) expect(isGoodbye(g), g).toBe(true)
     for (const s of ['Why do all the hotshots drive a Ram?', 'Where is it?', 'Goodness']) expect(isGoodbye(s), s).toBe(false)
+  })
+})
+
+describe('never an empty generation on a live request (ElevenLabs ends the call on one)', () => {
+  const events = (d: ReturnType<typeof setup>, id: string) =>
+    all<{ data: string }>(d.db, "SELECT data FROM call_events WHERE call_id = ? AND type = 'empty_reply' ORDER BY id", id).map(e => JSON.parse(e.data))
+  const outcomes = (d: ReturnType<typeof setup>, id: string) =>
+    all<{ outcome: string }>(d.db, 'SELECT outcome FROM call_turns WHERE call_id = ? ORDER BY id', id).map(r => r.outcome)
+
+  it('the brain answers with no line: a short acknowledgement instead of nothing', async () => {
+    const { d, call } = await start({}, {}, [undefined as never, [{ say: '' }]])
+    expect(spoken((await ask(call.id, 'mm')).body)).toBe(ACK_LINE)
+    expect(events(d, call.id)).toEqual([{ action: 'ack' }])
+  })
+  it('double-speak guard: a request taken over by a newer one is held silent (no ack), then answers empty once dropped', async () => {
+    const { d, call, seen } = await start({ EMPTY_HOLD_MS: '150' }, {}, [undefined as never, [() => null, { say: 'Sure.' }]])
+    const t0 = Date.now()
+    const first = ask(call.id, 'Can you')
+    while (!seen.some(j => j.type === 'turn')) await new Promise(r => setTimeout(r, 5))
+    const second = await ask(call.id, 'Can you check the date?')
+    expect(spoken(second.body)).toBe('Sure.')
+    const body = spoken((await first).body)
+    expect(body).toBe('')
+    expect(body).not.toContain(ACK_LINE.trim())
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(150) // held, not ended at once
+    expect(events(d, call.id)).toEqual([{ action: 'held', why: 'stale' }])
+    expect(outcomes(d, call.id)).toEqual(['continued', 'ok']) // not barge_in
+  })
+  it('double-speak guard: a turn that already said its filler gets no ack when a newer request takes over', async () => {
+    const { d, call, seen } = await start({ FILLER_AFTER_MS: '20' }, {}, [undefined as never, [() => null, { say: 'Got it.' }]])
+    const first = ask(call.id, 'Uh, just trying')
+    while (!seen.some(j => j.type === 'turn')) await new Promise(r => setTimeout(r, 5))
+    await new Promise(r => setTimeout(r, 60)) // the filler has gone out
+    const second = await ask(call.id, 'Uh, just trying to work on the kit.')
+    const a = spoken((await first).body), b = spoken(second.body)
+    expect(FILLER_LINES).toContain(a) // the filler alone: nothing added
+    expect(b.endsWith('Got it.')).toBe(true)
+    expect(a + b).not.toContain(ACK_LINE.trim())
+    expect(events(d, call.id)).toEqual([])
+  })
+  it('settle: superseded requests are held silent, never acknowledged', async () => {
+    const { d, call } = await start({ SETTLE_MS: '80' }, {}, [undefined as never, [{ say: 'Nice.' }]])
+    const a = ask(call.id, 'Uh, just')
+    await new Promise(r => setTimeout(r, 20))
+    const b = ask(call.id, 'Uh, just trying to work on the kit.')
+    const [ra, rb] = await Promise.all([a, b])
+    expect([spoken(ra.body), spoken(rb.body)]).toEqual(['', 'Nice.'])
+    expect(events(d, call.id)).toEqual([{ action: 'held', why: 'stale' }])
+  })
+  it('the call is ending (close line already said): held silent, no ack', async () => {
+    const { d, call } = await start({}, {}, [undefined as never, []])
+    expect(spoken((await ask(call.id, "I don't want to talk to a robot")).body)).not.toBe('')
+    expect(spoken((await ask(call.id, "I don't want to talk to a robot", 'hello?')).body)).toBe('')
+    expect(events(d, call.id)).toEqual([{ action: 'held', why: 'ending' }])
+  })
+})
+
+describe('a throw before the stream starts', () => {
+  it('becomes the exit line + hangup (brain_error), not a 500', async () => {
+    const { d, call } = await start({ BRAIN: 'canned' }, { brain: 'canned' }, undefined)
+    const brain = { reply(): AsyncIterable<string> { throw new Error('boom before streaming') } }
+    await app!.close()
+    app = await buildApp({ config: d.config, db: d.db, clients: { ...d, brain } })
+    const r = await ask(call.id, 'hello')
+    expect(r.statusCode).toBe(200)
+    expect(spoken(r.body)).toBe(EXIT_LINE)
+    expect(getCall(d.db, call.id)!.end_reason).toBe('brain_error')
+    expect(callEvents(d.db, call.id).some(e => e.type === 'brain_error')).toBe(true)
   })
 })

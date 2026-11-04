@@ -45,6 +45,8 @@ export function pickFiller(lastIdx: number, rand = Math.random): number {
 }
 export const FILLER2_LINE = 'Still with you, just a second. '
 export const EXIT_LINE = "I'm sorry, I'm having trouble on my end. Pete will follow up with you. Goodbye."
+/** A turn that would otherwise send nothing (the brain answered with no line): ElevenLabs ends the call on an empty generation. */
+export const ACK_LINE = 'Mm-hm. '
 
 /** Roughly how long a line takes to say, so a hangup after it doesn't cut it off. */
 export const speakMs = (text: string, floorMs: number) => Math.max(floorMs, 1000 + text.split(/\s+/).filter(Boolean).length * 400)

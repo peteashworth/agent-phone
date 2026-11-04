@@ -25,7 +25,8 @@ export type Conversation = {
   status: string  // initiated | in-progress | processing | done | failed
   transcript?: { role: string; message: string | null; time_in_call_secs?: number }[]
   analysis?: { transcript_summary?: string | null; call_summary_title?: string | null } | null
-  metadata?: { cost?: number | null; call_duration_secs?: number | null; termination_reason?: string | null }
+  metadata?: { cost?: number | null; call_duration_secs?: number | null; termination_reason?: string | null
+    error?: { code?: number | null; reason?: string | null; error_type?: string | null } | null }
   has_audio?: boolean
 }
 

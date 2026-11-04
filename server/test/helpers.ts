@@ -8,7 +8,7 @@ import type { TwilioClient, Dial } from '../src/voice/twilio.ts'
 export const NOON = new Date('2026-10-08T18:00:00Z')
 
 export function setup(env: Record<string, string> = {}) {
-  const config: Config = loadConfig({ DATA_DIR: '/tmp/unused', HANGUP_DELAY_MS: '0', ...env })
+  const config: Config = loadConfig({ DATA_DIR: '/tmp/unused', HANGUP_DELAY_MS: '0', EMPTY_HOLD_MS: '0', ...env })
   const db: DB = openDb(':memory:')
   migrate(db)
   seed(db)

@@ -6,6 +6,7 @@ import { type Deps, type CallRow, getCall, hangup, event, LIVE_STATUSES } from '
 import { all, one, run, audit } from './db.ts'
 import type { Config } from './config.ts'
 import { enqueueJob } from './brainJobs.ts'
+import type { Conversation } from './voice/elevenlabs.ts'
 import { findPhrase, removePhrase } from './voice/codePhrase.ts'
 import { sha256 } from './voice/brainTurn.ts'
 import { classifyGreeting } from './voice/greeting.ts'
@@ -122,6 +123,7 @@ async function finalizeCalls(d: Deps): Promise<string[]> {
     try {
       const conv = await d.elevenlabs.getConversation(call.el_conversation_id)
       if (!DONE.has(conv.status) && !last) continue // still processing (analysis lands ~seconds after the call)
+      endEvent(d, call, conv)
       const transcript = redact(d, call.id, (conv.transcript ?? [])
         .filter(t => t.message)
         .map(t => ({ role: t.role === 'user' ? 'user' : 'agent', text: t.message!, t: t.time_in_call_secs ?? null })))
@@ -150,6 +152,7 @@ async function finalizePrivate(d: Deps, call: CallRow, last: boolean): Promise<b
     try {
       const conv = await d.elevenlabs.getConversation(call.el_conversation_id)
       if (!DONE.has(conv.status) && !last) return false // ElevenLabs is still processing; deleting now may not stick
+      endEvent(d, call, conv)
       const secs = conv.metadata?.call_duration_secs
       run(db, 'UPDATE calls SET el_cost_credits = ?, duration_s = CASE WHEN COALESCE(duration_s, 0) = 0 THEN ? ELSE duration_s END WHERE id = ?',
         conv.metadata?.cost ?? null, secs ? Math.round(secs) : null, call.id)
@@ -162,6 +165,18 @@ async function finalizePrivate(d: Deps, call: CallRow, last: boolean): Promise<b
   if (call.el_conversation_id) await deleteConversation(d, call)
   finish(d, call.id, 'private')
   return true
+}
+
+/**
+ * How ElevenLabs says the call ended ("Call ended by remote party", "custom_llm generation failed", ...), kept before
+ * any delete: it is the one record of an ElevenLabs-side drop. Metadata only, never transcript text.
+ */
+function endEvent(d: Deps, call: CallRow, conv: Conversation) {
+  const m = conv.metadata
+  if (!m?.termination_reason && !m?.error) return
+  event(d.db, call.id, 'server', 'el_end', {
+    termination_reason: m.termination_reason?.slice(0, 200) ?? null,
+    error_code: m.error?.code ?? null, error_type: m.error?.error_type?.slice(0, 100) ?? null })
 }
 
 async function deleteConversation(d: Deps, call: CallRow): Promise<boolean> {

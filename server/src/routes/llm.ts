@@ -13,7 +13,7 @@ import { type Brain, type ChatMessage, makeBrain, cannedBrain, textOf } from '..
 import { TurnLog, prepareJasmineTurn, runJasmineTurn, scrubMessages, filterOptions, closingLine, alreadySaid, takeContinuation } from '../voice/brainTurn.ts'
 import type { FilterOptions } from '../voice/outputFilter.ts'
 import { awaitHuman, applyGreeting, isMachine, voicemailAction } from '../postcall.ts'
-import { openerFor, PETE_OPENER, NOTICE_LINE, EXIT_LINE, noticeHeard, speakMs } from '../voice/lines.ts'
+import { openerFor, PETE_OPENER, NOTICE_LINE, EXIT_LINE, ACK_LINE, noticeHeard, speakMs } from '../voice/lines.ts'
 import { effective } from '../settings.ts'
 
 type Body = { model?: string; messages?: ChatMessage[]; stream?: boolean }
@@ -49,6 +49,9 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
   const latest = new Map<string, number>()
   const lastAt = new Map<string, number>() // when each call's previous request arrived
   let reqSeq = 0
+  // Every request per call, newest last: an older one that ends up with nothing to say is stale, not a turn.
+  const newest = new Map<string, number>()
+  let entrySeq = 0
   /**
    * Wait SETTLE_MS, or SETTLE_BURST_MS when the call's previous request came less than SETTLE_BURST_WINDOW_MS ago (the
    * callee is mid-sentence and ElevenLabs keeps cutting it into pieces). True if this is still the call's newest
@@ -113,12 +116,19 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
     const pete = !!call && c.PERSONAL_OK_NUMBERS.includes(call.to_e164)
     const stop = prior ?? detectHardStop(lastUser, { afterDisclosure, personal })
     req.log.info({ marker: callMarker(messages), call: call?.id ?? null, turns: messages.length, stop }, 'llm turn')
+    const mine = ++entrySeq
+    if (call) newest.set(call.id, mine)
 
     const kind = call?.brain ?? c.BRAIN
     const ac = new AbortController()
     let log: TurnLog | undefined
-    let filterOpts: FilterOptions = call ? filterOptions(d, call) : { intimate: c.INTIMATE_TERMS }
+    let filterOpts: FilterOptions = { intimate: c.INTIMATE_TERMS }
     let source: AsyncIterable<string>
+    let filter: OutputFilter
+    // Anything that throws before the stream (DB, greeting/AMD, turn prep) goes to brainFailed like a brain error:
+    // exit line + hangup, never a bare 500 that ElevenLabs reads as a failed generation.
+    try {
+    if (call) filterOpts = filterOptions(d, call)
     if (stop) {
       if (call) log = new TurnLog(d, call, kind, prior ? 'closing' : 'hard_stop')
       // A first hard stop still says the notice if it wasn't heard; not for a recording objection (they've got it).
@@ -187,8 +197,11 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       const inner = source
       source = (async function* () { yield NOTICE_LINE; yield* inner })()
     }
-
-    const filter = new OutputFilter(c.PRIVATE_TERMS, filterOpts)
+    filter = new OutputFilter(c.PRIVATE_TERMS, filterOpts)
+    } catch (e) {
+      source = (async function* () { throw e })()
+      filter = new OutputFilter(c.PRIVATE_TERMS, { intimate: c.INTIMATE_TERMS })
+    }
     /** Text cleared by the filter on its way to ElevenLabs. Timing counts only the answer, not fillers. */
     const out = (text: string) => {
       if (!text) return
@@ -234,14 +247,43 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
         choices: [{ index: 0, message: { role: 'assistant', content: text.trim() }, finish_reason: 'stop' }] }
     }
 
+    /**
+     * Nothing was said and ElevenLabs is still waiting. An empty generation makes it end the call, so never send one:
+     * - stale (a newer request took over: settle, continuation) or the call is ending: hold the request open silently
+     *   until ElevenLabs drops it (at most EMPTY_HOLD_MS). Never a line: the newer request is the one that speaks.
+     * - otherwise (the brain answered with no line): a short acknowledgement.
+     */
+    const emptyReply = async () => {
+      const stale = newest.get(call!.id) !== mine
+      const ending = !!getCall(db, call!.id)?.hangup_requested_at
+      if (stale || ending) {
+        event(db, call!.id, 'server', 'empty_reply', { action: 'held', why: stale ? 'stale' : 'ending' })
+        if (!c.EMPTY_HOLD_MS) return
+        holding = true
+        await new Promise<void>(resolve => {
+          const t = setTimeout(resolve, c.EMPTY_HOLD_MS)
+          release = () => { clearTimeout(t); resolve() }
+        })
+        holding = false
+        return
+      }
+      event(db, call!.id, 'server', 'empty_reply', { action: 'ack' })
+      res.write(chunk({ content: ACK_LINE }))
+      if (log) { log.spoke(ACK_LINE); log.save() }
+      saidAny = true
+    }
+
     reply.hijack()
     const res = reply.raw
     if (res.destroyed) return // dropped while settling
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' })
-    let closed = false
+    let closed = false, holding = false
+    let release = () => {}
     res.on('close', () => {
       if (res.writableEnded) return
       closed = true
+      release()
+      if (holding) return // a held empty reply: its outcome is already final
       ac.abort() // barge-in: ElevenLabs dropped the request
       if (log) { log.outcome = 'barge_in'; log.save() }
     })
@@ -257,8 +299,10 @@ export async function llmRoutes(app: FastifyInstance, d: Deps) {
       if (line) res.write(chunk({ content: line }))
     }
     const tail = filter.flush()
-    if (tail && !closed) { out(tail); res.write(chunk({ content: tail })); sent() }
+    if (tail && !closed) { out(tail); res.write(chunk({ content: tail })); sent(); if (tail.trim()) saidAny = true }
     finish()
+    if (!closed && !saidAny && call) await emptyReply()
+    if (call && newest.get(call.id) === mine) newest.delete(call.id)
     if (!closed) { res.write(chunk({}, 'stop')); res.end('data: [DONE]\n\n') }
   }
 

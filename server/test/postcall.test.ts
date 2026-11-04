@@ -458,6 +458,17 @@ describe('Pete-agent calls (private): metadata only, ElevenLabs copy deleted, te
     const kept = all<{ outcome: string | null }>(d.db, 'SELECT outcome FROM call_turns WHERE call_id = ?', call.id)
     expect(kept.length).toBeGreaterThan(0) // timings/outcomes stay
   })
+  it('keeps how ElevenLabs ended the call (el_end) before the delete: metadata only, no transcript text', async () => {
+    const { d, call } = await ended()
+    d.conversations.conv_test1 = { ...conv, metadata: { ...conv.metadata, termination_reason: 'custom_llm generation failed', error: { code: 1002, reason: 'x', error_type: 'llm_error' } } }
+    await postCallSweep(d)
+    const ev = all<{ id: number; type: string; data: string }>(d.db, "SELECT id, type, data FROM call_events WHERE call_id = ? AND type IN ('el_end', 'el_deleted') ORDER BY id", call.id)
+    expect(ev.map(e => e.type)).toEqual(['el_end', 'el_deleted'])
+    expect(JSON.parse(ev[0].data)).toEqual({ termination_reason: 'custom_llm generation failed', error_code: 1002, error_type: 'llm_error' })
+    const allData = all<{ data: string | null }>(d.db, 'SELECT data FROM call_events WHERE call_id = ?', call.id).map(e => e.data ?? '').join(' ')
+    expect(allData).not.toContain('Something personal')
+    expect(allData).not.toContain('Personal summary')
+  })
   it('a failed delete is retried every sweep until it lands', async () => {
     const { d, call } = await ended()
     d.failDelete.on = true

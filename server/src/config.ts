@@ -82,6 +82,9 @@ const schema = z.object({
   SETTLE_BURST_MS: z.coerce.number().int().min(0).max(3000).default(600),
   SETTLE_BURST_WINDOW_MS: z.coerce.number().int().min(0).max(10000).default(1500),
   TURN_TIMEOUT_S: z.coerce.number().int().min(3).max(60).default(20),
+  // A live request that would answer empty because it's stale (a newer request took over) or the call is ending is held
+  // open silently until ElevenLabs drops it, at most this long: ElevenLabs ends the call on an empty generation. 0 = off.
+  EMPTY_HOLD_MS: z.coerce.number().int().min(0).max(60000).default(15000),
   // No poll from the host for this long = brain offline (place_call refuses, live turns take the exit line).
   BRAIN_OFFLINE_S: z.coerce.number().int().min(5).max(300).default(30),
   // Secret, entered by Pete in /etc/agent-phone.env. Unset = the personal tier can never unlock.
