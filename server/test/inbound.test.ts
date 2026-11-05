@@ -36,7 +36,7 @@ function fakeHost(d: ReturnType<typeof setup>, opts: { answerStart?: boolean } =
 async function start(env: Record<string, string> = {}, host: false | { answerStart?: boolean } = {}) {
   const d = setup({ ...LIVE_ENV, ELEVENLABS_PETE_AGENT_ID: 'agent_pete', CUSTOM_LLM_SECRET: SECRET, AMD_ENABLED: 'false',
     BRAIN: 'jasmine', CODE_PHRASE: PHRASE, INBOUND_ENABLED: 'true', INBOUND_WARM_WAIT_S: '1', SETTLE_MS: '0',
-    FILLER_AFTER_MS: '10000', FILLER2_AFTER_MS: '0', ...env })
+    FILLER_AFTER_MS: '10000', FILLER2_AFTER_MS: '0', FILLER_ADAPT_MAX_MS: '0', ...env })
   app = await buildApp({ config: d.config, db: d.db, clients: d })
   const seen = host === false ? [] : fakeHost(d, host)
   if (host === false) markPoll(d.db, 'jasmine') // online, but nobody answers

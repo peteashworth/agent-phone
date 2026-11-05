@@ -71,6 +71,11 @@ const schema = z.object({
   // Fixed filler lines while a turn is pending, and the per-turn limit before the exit line + hangup.
   FILLER_AFTER_MS: z.coerce.number().int().min(0).max(20000).default(2500),
   FILLER2_AFTER_MS: z.coerce.number().int().min(0).max(30000).default(9000),
+  // Per call, the first filler waits for this call's usual reply time (median of the last few brain turns) plus the
+  // margin, so a reply that comes on time isn't stacked behind a filler (Pete, Nov 4). Never earlier than
+  // FILLER_AFTER_MS, never later than FILLER_ADAPT_MAX_MS. FILLER_ADAPT_MAX_MS 0 = off (always FILLER_AFTER_MS).
+  FILLER_ADAPT_MARGIN_MS: z.coerce.number().int().min(0).max(5000).default(700),
+  FILLER_ADAPT_MAX_MS: z.coerce.number().int().min(0).max(20000).default(5000),
   // A new request this soon after the previous turn was dropped, when that turn spoke only filler, carries it on
   // (ElevenLabs split one sentence on a pause): merged text, no barge-in. 0 = off.
   CONTINUATION_MS: z.coerce.number().int().min(0).max(10000).default(1500),

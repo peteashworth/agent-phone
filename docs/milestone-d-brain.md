@@ -114,10 +114,15 @@ The droplet streams these on the same SSE response that later carries the real r
 continues with the answer as soon as it arrives:
 
 - At `FILLER_AFTER_MS` (2500 since Oct 8; was 1500): one short line, picked at random from a fixed, server-owned list of
-  five ("One moment.", "Let me check.", ...), never the one the call used last. It contains nothing personal and is never model-written.
+  short listening sounds ("Mm.", "Okay.", "Mm, okay.", "Right."; since Nov 4, was "One moment.", "Let me check.", ...),
+  never the one the call used last. It contains nothing personal and is never model-written.
+- Adaptive (Nov 4): from the second turn on, the first filler waits for this call's median reply time (last 5 brain
+  turns) + `FILLER_ADAPT_MARGIN_MS` (700), never earlier than `FILLER_AFTER_MS`, never later than `FILLER_ADAPT_MAX_MS`
+  (5000; 0 = off). A host that usually answers in ~3.2s gets its filler at ~3.9s, so an on-time reply isn't stacked
+  right behind a filler. If the first filler moves past `FILLER2_AFTER_MS`, the second keeps its usual gap after it.
 - At `FILLER2_AFTER_MS` (9000): a second line ("Still with you, just a second.").
 - No third filler. The next thing is either the answer or the timeout exit (§5).
-- If the reply arrives before 1.5s, no filler is spoken.
+- If the reply arrives before the first filler is due, no filler is spoken.
 
 EL also has its own "soft timeout" filler setting (VERIFY that it exists on this plan). We leave it off: ours is
 logged, tested and consistent.

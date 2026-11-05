@@ -63,6 +63,21 @@ function lastFiller(db: Deps['db'], callId: string): number {
   return row?.said ? FILLER_LINES.findIndex(l => row.said!.startsWith(l)) : -1
 }
 
+/**
+ * When the first filler goes out, in ms after the request: this call's usual reply time (median of the last 5 brain
+ * turns that got a reply) plus FILLER_ADAPT_MARGIN_MS, clamped to [FILLER_AFTER_MS, FILLER_ADAPT_MAX_MS]. The first
+ * turn has no history and uses FILLER_AFTER_MS.
+ */
+export function firstFillerMs(d: Deps, callId: string): number {
+  const c = d.config
+  if (!c.FILLER_ADAPT_MAX_MS || c.FILLER_ADAPT_MAX_MS <= c.FILLER_AFTER_MS) return c.FILLER_AFTER_MS
+  const ms = all<{ reply_ms: number }>(d.db, `SELECT reply_ms FROM call_turns WHERE call_id = ? AND kind = 'brain'
+    AND reply_ms IS NOT NULL ORDER BY id DESC LIMIT 5`, callId).map(r => r.reply_ms).sort((a, b) => a - b)
+  if (!ms.length) return c.FILLER_AFTER_MS
+  const mid = ms.length % 2 ? ms[(ms.length - 1) / 2] : (ms[ms.length / 2 - 1] + ms[ms.length / 2]) / 2
+  return Math.round(Math.min(Math.max(c.FILLER_AFTER_MS, mid + c.FILLER_ADAPT_MARGIN_MS), c.FILLER_ADAPT_MAX_MS))
+}
+
 /** The previous turn on this call, to tell whether the person cut it off. */
 function previousTurn(d: Deps, callId: string) {
   return one<{ outcome: string; said: string | null }>(d.db,
@@ -71,11 +86,15 @@ function previousTurn(d: Deps, callId: string) {
 
 // ---------------------------------------------------------------- continuation
 
-/** True if the text is fillers only (or nothing): the person never heard an answer in it. */
+/**
+ * True if the text is fillers only (or nothing): the person never heard an answer in it. Fillers and the notice only
+ * ever lead a turn, so only leading ones are stripped (an answer that is just "Okay." is still an answer).
+ */
 export function onlyFiller(said: string | null): boolean {
-  let s = said ?? ''
-  for (const l of [...FILLER_LINES, FILLER2_LINE, NOTICE_LINE].map(l => l.trim())) s = s.split(l).join('')
-  return !s.trim()
+  const lines = [...FILLER_LINES, FILLER2_LINE, NOTICE_LINE].map(l => l.trim())
+  let s = (said ?? '').trim()
+  for (let l; (l = lines.find(l => s.startsWith(l)));) s = s.slice(l.length).trim()
+  return !s
 }
 
 export type Continuation = { seq: number | null; interrupted: unknown }
@@ -281,10 +300,13 @@ export async function* runJasmineTurn(d: Deps, p: Prepared, log: TurnLog, signal
     log.mark('queued')
     return job.id
   }
+  const f1 = firstFillerMs(d, id)
+  // The second filler keeps its gap after the first if the first moved past it.
+  const f2 = c.FILLER2_AFTER_MS ? Math.max(c.FILLER2_AFTER_MS, f1 + c.FILLER2_AFTER_MS - c.FILLER_AFTER_MS) : 0
   let jobId = send()
   const fillers: { at: number; stage: 'filler1' | 'filler2'; line: string }[] = [
-    { at: log.t0 + c.FILLER_AFTER_MS, stage: 'filler1' as const, line: FILLER_LINES[pickFiller(lastFiller(db, id))] },
-    ...(c.FILLER2_AFTER_MS ? [{ at: log.t0 + c.FILLER2_AFTER_MS, stage: 'filler2' as const, line: FILLER2_LINE }] : []),
+    { at: log.t0 + f1, stage: 'filler1' as const, line: FILLER_LINES[pickFiller(lastFiller(db, id))] },
+    ...(f2 ? [{ at: log.t0 + f2, stage: 'filler2' as const, line: FILLER2_LINE }] : []),
   ].filter(f => f.at < deadline)
 
   for (;;) {

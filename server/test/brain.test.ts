@@ -4,14 +4,14 @@ import { buildApp } from '../src/app.ts'
 import { createKey } from '../src/auth.ts'
 import { placeCall, getCall, warming, CallRefused, callEvents } from '../src/calls.ts'
 import { claimNext, submitResult, markPoll, getJob, enqueueJob, type JobRow } from '../src/brainJobs.ts'
-import { TurnLog, prepareJasmineTurn, runJasmineTurn, onlyFiller } from '../src/voice/brainTurn.ts'
+import { TurnLog, prepareJasmineTurn, runJasmineTurn, onlyFiller, firstFillerMs } from '../src/voice/brainTurn.ts'
 import { ACK_LINE, EXIT_LINE, FILLER_LINES, FILLER2_LINE, NOTICE_LINE, PETE_OPENER, pickFiller } from '../src/voice/lines.ts'
 import { findPhrase, nearMiss, removePhrase } from '../src/voice/codePhrase.ts'
 import { isQuestion, isGoodbye } from '../src/voice/question.ts'
 import { OutputFilter, BLOCKED_LINE } from '../src/voice/outputFilter.ts'
 import { redact } from '../src/postcall.ts'
 import { callDetail } from '../src/routes/api.ts'
-import { all } from '../src/db.ts'
+import { all, run } from '../src/db.ts'
 import { setup, LIVE_ENV } from './helpers.ts'
 
 const SECRET = 'x'.repeat(32)
@@ -47,7 +47,7 @@ function fakeHost(d: ReturnType<typeof setup>, turns: Answer[] = [], opts: { del
 
 async function start(env: Record<string, string> = {}, input: Record<string, unknown> = {}, host?: Parameters<typeof fakeHost>) {
   const d = setup({ ...LIVE_ENV, ELEVENLABS_PETE_AGENT_ID: 'agent_pete', CUSTOM_LLM_SECRET: SECRET, AMD_ENABLED: 'false', BRAIN: 'jasmine', CODE_PHRASE: PHRASE,
-    FILLER_AFTER_MS: '10000', FILLER2_AFTER_MS: '0', SETTLE_MS: '0', ...env })
+    FILLER_AFTER_MS: '10000', FILLER2_AFTER_MS: '0', FILLER_ADAPT_MAX_MS: '0', SETTLE_MS: '0', ...env })
   app = await buildApp({ config: d.config, db: d.db, clients: d })
   const seen = fakeHost(d, ...((host?.slice(1) ?? []) as [Answer[]?, { delayMs?: number }?]))
   const placed = await placeCall(d, 'jasmine', { to: '+14358403707', purpose: 'test', brief: 'say hi', dry_run: false, ...input })
@@ -161,6 +161,38 @@ describe('jasmine turns', () => {
     const used = heard.map(h => FILLER_LINES.findIndex(l => h.startsWith(l)))
     expect(used.every(i => i >= 0)).toBe(true)
     for (let i = 1; i < used.length; i++) expect(used[i]).not.toBe(used[i - 1])
+  })
+  it('the first filler waits for this call\'s usual reply time, so an on-time reply has no filler stacked on it', async () => {
+    const { d, call } = await start({ FILLER_AFTER_MS: '30', FILLER2_AFTER_MS: '0', FILLER_ADAPT_MARGIN_MS: '150', FILLER_ADAPT_MAX_MS: '2000' }, {},
+      [undefined as never, [{ say: 'A.' }, { say: 'B.' }], { delayMs: 120 }])
+    const first = spoken((await ask(call.id, 'one')).body) // no history yet: FILLER_AFTER_MS
+    expect(FILLER_LINES.some(l => first === l + 'A.')).toBe(true)
+    expect(firstFillerMs(d, call.id)).toBeGreaterThanOrEqual(270)
+    expect(spoken((await ask(call.id, 'one', 'two')).body)).toBe('B.') // ~120ms reply, filler now at ~270ms
+  })
+  it('the adapted filler is capped at FILLER_ADAPT_MAX_MS', async () => {
+    const { call } = await start({ FILLER_AFTER_MS: '30', FILLER2_AFTER_MS: '0', FILLER_ADAPT_MARGIN_MS: '500', FILLER_ADAPT_MAX_MS: '60' }, {},
+      [undefined as never, [{ say: 'A.' }, { say: 'B.' }], { delayMs: 150 }])
+    await ask(call.id, 'one')
+    const second = spoken((await ask(call.id, 'one', 'two')).body)
+    expect(FILLER_LINES.some(l => second === l + 'B.')).toBe(true)
+  })
+  it('firstFillerMs: median of the last 5 replies + margin, clamped; off with FILLER_ADAPT_MAX_MS 0', async () => {
+    const { d, call } = await start({ FILLER_AFTER_MS: '2500', FILLER_ADAPT_MARGIN_MS: '700', FILLER_ADAPT_MAX_MS: '5000' })
+    const add = (ms: number | null, kind = 'brain') => run(d.db,
+      "INSERT INTO call_turns (call_id, started_at, brain, kind, outcome, reply_ms) VALUES (?, ?, 'jasmine', ?, 'ok', ?)", call.id, new Date().toISOString(), kind, ms)
+    expect(firstFillerMs(d, call.id)).toBe(2500) // no history
+    add(1000); expect(firstFillerMs(d, call.id)).toBe(2500) // fast host: never earlier than the floor
+    add(3200); add(null); add(9000, 'hard_stop'); expect(firstFillerMs(d, call.id)).toBe(2800) // median 2100; null + non-brain ignored
+    add(3400); expect(firstFillerMs(d, call.id)).toBe(3900) // median 3200
+    for (const ms of [9000, 9000, 9000]) add(ms)
+    expect(firstFillerMs(d, call.id)).toBe(5000) // last 5 = 3200,3400,9000×3 → capped
+    d.config.FILLER_ADAPT_MAX_MS = 0
+    expect(firstFillerMs(d, call.id)).toBe(2500)
+  })
+  it('filler lines are short listening sounds, never the empty-reply ack', () => {
+    expect(FILLER_LINES.length).toBeGreaterThanOrEqual(2)
+    for (const l of FILLER_LINES) { expect(l.trim().split(/\s+/).length).toBeLessThanOrEqual(2); expect(l.trim()).not.toBe(ACK_LINE.trim()) }
   })
   it('pickFiller skips the last index', () => {
     for (let last = -1; last < FILLER_LINES.length; last++)
@@ -288,6 +320,8 @@ describe('continuation (one sentence split on a pause)', () => {
     expect(onlyFiller(null)).toBe(true)
     expect(onlyFiller(FILLER_LINES[2] + FILLER2_LINE)).toBe(true)
     expect(onlyFiller(FILLER_LINES[0] + 'It is Thursday.')).toBe(false)
+    expect(onlyFiller('Sure. ' + FILLER_LINES[1])).toBe(false) // only leading fillers count
+    expect(onlyFiller(ACK_LINE)).toBe(false)
   })
 })
 
